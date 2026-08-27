@@ -72,11 +72,16 @@
 #                          the machine. Only Claude Code sessions are
 #                          supported right now. $ARTIFAX_API_URL overrides
 #                          the API host (default https://artifax.dev).
-#   afx pull <project-id> [session-id-prefix] [--into <dir>]
+#   afx pull <project-id-or-hash> [session-id-prefix] [--into <dir>]
 #                          the inverse of push: pull a session back down
 #                          from artifax.dev and make it resumable here.
 #                          Needs $ARTIFAX_API_TOKEN with the sessions:read
-#                          scope. session-id-prefix is a prefix of the
+#                          scope. The first argument takes either a real
+#                          artifax project id, OR the exact same local HASH
+#                          `afx push <hash>` used -- resolved server-side
+#                          via GET /api/v1/sessions to the project it lives
+#                          in, so push and pull can share one identifier.
+#                          session-id-prefix is a prefix of the
 #                          *artifax* session id (the one `afx push`'s own
 #                          "pushed: <id>" line prints), not a local
 #                          `afx list` HASH -- omit it when the project has
@@ -1377,7 +1382,7 @@ afx_pull () {
          else echo "afx pull: unexpected argument $1" >&2; return 1; fi ;;
     esac
   done
-  [ -n "$project_id" ] || { echo "afx pull: usage: afx pull <project-id> [session-id-prefix] [--into <dir>]" >&2; return 1; }
+  [ -n "$project_id" ] || { echo "afx pull: usage: afx pull <project-id-or-hash> [session-id-prefix] [--into <dir>]" >&2; return 1; }
   [ -n "${ARTIFAX_API_TOKEN:-}" ] || { echo "afx pull: \$ARTIFAX_API_TOKEN not set (needs the sessions:read scope)" >&2; return 1; }
   local c
   for c in jq curl gunzip; do
@@ -1385,6 +1390,42 @@ afx_pull () {
   done
 
   local api_url="${ARTIFAX_API_URL:-https://artifax.dev}"
+
+  # A real artifax project id is a 26-char uppercase Crockford-base32 ULID. Anything
+  # else is treated as a local session-hash prefix -- the exact same value `afx push
+  # <hash>` already accepts -- and resolved server-side via GET /api/v1/sessions to the
+  # project it lives in. This is what lets `afx push xyz123` and, on another machine,
+  # `afx pull xyz123` use the literal same identifier: no project id to copy anywhere.
+  if ! [[ "$project_id" =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]]; then
+    local hash_arg="$project_id"
+    echo "afx pull: $hash_arg doesn't look like a project id -- resolving as a session hash..."
+    local lookup_resp lookup_status
+    lookup_resp="$(curl -sS -w '\n%{http_code}' "$api_url/api/v1/sessions?external_id_prefix=$project_id" -H "Authorization: Bearer $ARTIFAX_API_TOKEN")"
+    lookup_status="$(tail -1 <<<"$lookup_resp")"
+    lookup_resp="$(sed '$d' <<<"$lookup_resp")"
+    if [ "$lookup_status" != 200 ]; then
+      echo "afx pull: couldn't resolve $hash_arg ($lookup_status): $lookup_resp" >&2
+      return 1
+    fi
+    local distinct_projects match_count
+    distinct_projects="$(jq -r '[.items[].project_id] | unique | .[]' <<<"$lookup_resp")"
+    if [ -z "$distinct_projects" ]; then
+      match_count=0
+    else
+      match_count="$(wc -l <<<"$distinct_projects" | tr -d ' ')"
+    fi
+    if [ "$match_count" -eq 0 ]; then
+      echo "afx pull: no session found matching hash $hash_arg (or you don't have access to its project)" >&2
+      return 1
+    elif [ "$match_count" -gt 1 ]; then
+      echo "afx pull: hash $hash_arg matches sessions in more than one project you can see -- use the full project id instead:" >&2
+      echo "$distinct_projects" >&2
+      return 1
+    fi
+    project_id="$distinct_projects"
+    echo "afx pull: resolved $hash_arg -> project $project_id"
+  fi
+
   echo "afx pull: fetching bundle for project $project_id..."
   local bundle_resp bundle_status
   bundle_resp="$(curl -sS -w '\n%{http_code}' "$api_url/api/v1/projects/$project_id/bundle" -H "Authorization: Bearer $ARTIFAX_API_TOKEN")"
@@ -1472,7 +1513,7 @@ client for artifax.dev.
   afx find [-n N] [-r] <pat>   search transcripts for a real user prompt
   afx jobs [-n N] [-r] [pat]   list background jobs started from a session
   afx push [hash] [opts]       push a session to artifax.dev
-  afx pull <project-id> [opts] pull a session back down from artifax.dev
+  afx pull <project-id-or-hash> [opts]  pull a session back down from artifax.dev
 
 Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push.
 Run `source afx.sh` from .bashrc/.zshrc for `afx go` to actually cd your

@@ -135,10 +135,15 @@ afx push [hash] [--project <id>] [--allow-secret <finding-id>]...
                       # documented follow-up, not a silent gap.
                       # `$ARTIFAX_API_URL` overrides the API host (default
                       # `https://artifax.dev`).
-afx pull <project-id> [session-id-prefix] [--into <dir>]
+afx pull <project-id-or-hash> [session-id-prefix] [--into <dir>]
                       # the inverse of push: pull a session back down from
                       # artifax.dev and make it resumable here. Needs
                       # $ARTIFAX_API_TOKEN with the sessions:read scope.
+                      # The first argument takes either a real artifax
+                      # project id, or the exact same local HASH `afx push
+                      # <hash>` used -- resolved server-side to the project
+                      # it lives in, so push and pull can share one value:
+                      # `afx push 2f4afa` then, elsewhere, `afx pull 2f4afa`.
                       # session-id-prefix is a prefix of the *artifax*
                       # session id (the one `afx push`'s own "pushed: <id>"
                       # line prints), not a local `afx list` HASH -- omit
