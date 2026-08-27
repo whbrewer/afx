@@ -287,18 +287,72 @@ _afx_display_dir () {
   printf '%s' "$dir"
 }
 
+_afx_nearest_idx () {
+  # Index into levels $2.. closest to value $1 (integer-only).
+  local v="$1"; shift
+  local best=0 bestd=100000 i=0 d lvl
+  for lvl in "$@"; do
+    d=$(( lvl - v )); [ "$d" -lt 0 ] && d=$(( -d ))
+    [ "$d" -lt "$bestd" ] && { bestd=$d; best=$i; }
+    i=$(( i + 1 ))
+  done
+  printf '%d' "$best"
+}
+
+_afx_256_nearest () {
+  # Nearest xterm 256-color index for RGB $1 $2 $3 -- checks both the
+  # 6x6x6 color cube (16-231) and the grayscale ramp (232-255) and picks
+  # whichever lands closer, same approach terminal-color libraries use.
+  # Integer-only so it needs no bc/python dependency.
+  local r="$1" g="$2" b="$3" levels="0 95 135 175 215 255"
+  local ri gi bi lv
+  ri="$(_afx_nearest_idx "$r" $levels)"
+  gi="$(_afx_nearest_idx "$g" $levels)"
+  bi="$(_afx_nearest_idx "$b" $levels)"
+  lv=($levels)
+  local cr=${lv[ri]} cg=${lv[gi]} cb=${lv[bi]}
+  local cube_index=$(( 16 + 36*ri + 6*gi + bi ))
+  local cube_dist=$(( (r-cr)*(r-cr) + (g-cg)*(g-cg) + (b-cb)*(b-cb) ))
+
+  local avg=$(( (r+g+b)/3 )) grays="" i
+  for i in $(seq 0 23); do grays="$grays $(( 8 + 10*i ))"; done
+  local gi2; gi2="$(_afx_nearest_idx "$avg" $grays)"
+  local gray_index=$(( 232 + gi2 ))
+  local gval=$(( 8 + 10*gi2 ))
+  local gray_dist=$(( (r-gval)*(r-gval) + (g-gval)*(g-gval) + (b-gval)*(b-gval) ))
+
+  if [ "$cube_dist" -le "$gray_dist" ]; then printf '%d' "$cube_index"
+  else printf '%d' "$gray_index"; fi
+}
+
 _afx_fg () {
-  # $1 $2 $3 = R G B, $4 = nearest xterm 256-color index. 24-bit
-  # truecolor only when $COLORTERM says the terminal actually renders it
-  # -- tmux and a plain "xterm-256color" TERM (still the common default,
-  # even on terminals that could do better) routinely don't, and either
-  # drop \033[38;2;...m entirely or render it as the wrong color, which
-  # is why AFX_PALETTE could look like it wasn't doing anything. The
-  # 256-color fallback is understood by effectively everything that
-  # claims 256-color support to begin with.
+  # $1 $2 $3 = R G B. 24-bit truecolor only when $COLORTERM says the
+  # terminal actually renders it -- tmux and a plain "xterm-256color"
+  # TERM (still the common default, even on terminals that could do
+  # better) routinely don't, and either drop \033[38;2;...m entirely or
+  # render it as the wrong color, which is why AFX_PALETTE could look
+  # like it wasn't doing anything. The 256-color fallback is understood
+  # by effectively everything that claims 256-color support to begin with.
   case "${COLORTERM:-}" in
     truecolor|24bit) printf '\033[38;2;%d;%d;%dm' "$1" "$2" "$3" ;;
-    *)                printf '\033[38;5;%dm' "$4" ;;
+    *)                printf '\033[38;5;%dm' "$(_afx_256_nearest "$1" "$2" "$3")" ;;
+  esac
+}
+
+_afx_parse_color () {
+  # $1 as "#RRGGBB" / "RRGGBB" (hex) or "R,G,B" (decimal) -> prints
+  # "R G B"; fails (no output) on anything else, including unset/empty,
+  # so callers can `if rgb="$(_afx_parse_color "$x")"` to fall through to
+  # a default.
+  local c="${1//[[:space:]]/}"
+  case "$c" in
+    '#'[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+      c="${c#'#'}"; printf '%d %d %d' "0x${c:0:2}" "0x${c:2:2}" "0x${c:4:2}" ;;
+    [0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F])
+      printf '%d %d %d' "0x${c:0:2}" "0x${c:2:2}" "0x${c:4:2}" ;;
+    [0-9]*,[0-9]*,[0-9]*)
+      printf '%s' "${c//,/ }" ;;
+    *) return 1 ;;
   esac
 }
 
@@ -526,21 +580,31 @@ afx_list () {
   # cancels out in column -t's width math instead of skewing it.
   local c_hash="" c_mark="" c_dim="" c_warn="" c_reset="" c_invert=""
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    # Palette: $AFX_PALETTE if already set in the environment wins;
-    # otherwise ~/.afx/settings may set it (a small sourced shell file,
-    # e.g. a line reading `AFX_PALETTE=light`); otherwise "dark". Colors
-    # are ORNL brand secondary/accent hues, chosen per palette for
-    # contrast against a dark vs. light terminal background.
-    [ -n "${AFX_PALETTE:-}" ] || { [ -f "$HOME/.afx/settings" ] && . "$HOME/.afx/settings"; }
-    if [ "${AFX_PALETTE:-dark}" = light ]; then
-      c_hash="$(_afx_fg 35 86 115 23)"     # Hydro
-      c_mark="$(_afx_fg 166 33 144 126)"   # Plasma
+    # Palette: $AFX_PALETTE / $AFX_HASH_COLOR if already set in the
+    # environment win; otherwise ~/.afx/settings may set them (a small
+    # sourced shell file, e.g. lines reading `AFX_PALETTE=light` or
+    # `AFX_HASH_COLOR=#55BAB4`); otherwise "dark". AFX_HASH_COLOR takes
+    # any "#RRGGBB"/"RRGGBB"/"R,G,B" color and overrides the hash color
+    # regardless of AFX_PALETTE, for picking an exact shade rather than
+    # one of the two built-in palettes. The built-ins are ORNL brand
+    # secondary/accent hues, chosen per palette for contrast against a
+    # dark vs. light terminal background.
+    [ -n "${AFX_PALETTE:-}${AFX_HASH_COLOR:-}" ] || { [ -f "$HOME/.afx/settings" ] && . "$HOME/.afx/settings"; }
+    local hash_rgb
+    if hash_rgb="$(_afx_parse_color "${AFX_HASH_COLOR:-}")"; then
+      c_hash="$(_afx_fg $hash_rgb)"
+    elif [ "${AFX_PALETTE:-dark}" = light ]; then
+      c_hash="$(_afx_fg 45 105 161)"   # Infinity
     else
-      c_hash="$(_afx_fg 167 251 196 158)"  # Mist
-      c_mark="$(_afx_fg 45 105 161 25)"    # Infinity
+      c_hash="$(_afx_fg 167 251 196)"  # Mist
+    fi
+    if [ "${AFX_PALETTE:-dark}" = light ]; then
+      c_mark="$(_afx_fg 166 33 144)"   # Plasma
+    else
+      c_mark="$(_afx_fg 45 105 161)"   # Infinity
     fi
     c_dim=$'\033[2m'
-    c_warn="$(_afx_fg 235 93 42 166)"      # Spark, same in both palettes
+    c_warn="$(_afx_fg 235 93 42)"      # Spark, same in both palettes
     c_reset=$'\033[0m'
     c_invert=$'\033[7m'  # swapped fg/bg, for the table header row
   fi
