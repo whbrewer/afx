@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# afx dispatcher binary. Sourcing afx.sh (see README) also defines an
+# `afx` shell function that shadows this one in interactive shells --
+# that version can actually cd for `afx go`, which a subprocess can't do
+# for its parent shell. This binary exists so `afx ...` still works from
+# shells that never read .bashrc, e.g. `! afx go <hash>` inside a Claude
+# Code session.
+source "$(dirname "$(readlink -f "$0")")/afx.sh"
+afx "$@"

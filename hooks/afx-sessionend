@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# afx SessionEnd hook — see README's "Session journal" section.
+#
+# Writes a fast heuristic summary (the session's first user message)
+# synchronously, so this hook always returns in a fraction of a second and
+# can never be killed for running too long. If AFX_AUTOSUMMARY is
+# unset or "llm" (the default), it also launches a fully detached
+# background job (afx-summarize-async) that asks an LLM (haiku by
+# default; override with AFX_SUMMARY_MODEL) for a better <=12-word
+# summary plus a longer detail paragraph, and patches the row in place
+# once it's ready — after this hook, and possibly the whole claude
+# process, has exited. If that call fails for any reason (no network,
+# spend limit reached, `claude` missing, timeout), the heuristic summary
+# already on disk stands; nothing here depends on the LLM call succeeding.
+# Set AFX_AUTOSUMMARY=first to skip the LLM step entirely.
+
+[ -n "$AFX_IN_HOOK" ] && exit 0  # must not recurse into our own claude -p
+
+# Reuse the migration logic from afx.sh, installed alongside this hook
+# (defines _afx_migrate; harmless to source here even though this shell
+# also picks up afx_star/afx_go/etc. unused).
+. "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+_afx_migrate 2>/dev/null
+
+IN="$(cat)"
+sid="$(jq -r '.session_id // empty' <<<"$IN")"
+tp="$(jq -r '.transcript_path // empty' <<<"$IN")"
+cwd="$(jq -r '.cwd // empty' <<<"$IN")"
+reason="$(jq -r '.reason // "exit"' <<<"$IN")"
+[ -n "$sid" ] && [ -f "$tp" ] || exit 0
+home="${tp%/projects/*}"
+sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+
+user_and_assistant_text () {
+  jq -r 'select(.type == "user" or .type == "assistant")
+         | select(.isSidechain != true) | .message.content
+         | if type == "string" then .
+           else (map(select(.type == "text") | .text) | join(" ")) end' \
+      "$tp" 2>/dev/null \
+    | sed 's/^[[:space:]]*//' | grep -v -e '^<' -e '^$'
+}
+
+# Number of real user prompts in this session -- how many times the user
+# actually typed something, not counting subagent/sidechain turns. A user
+# *role* transcript entry isn't necessarily something typed -- Claude Code
+# sends tool results back as user-role messages too, so this excludes
+# messages whose extracted text is blank (tool-result-only) or starts with
+# "<" (injected content: system reminders, skill loads, etc.), same
+# heuristic _afx_first_msg uses. Counting must happen entirely inside jq,
+# never by piping the extracted text through the shell and counting
+# printed lines -- any message whose text contains an embedded newline
+# (routine for anything longer than a one-liner) would inflate a
+# line-based count by however many lines that one message happens to wrap
+# to.
+prompt_count () {
+  jq -s '[.[] | select(.type == "user" and .isSidechain != true)
+          | (.message.content
+             | if type == "string" then .
+               else (map(select(.type == "text") | .text) | join(" ")) end)
+          | (. // "")
+          | select(test("^\\s*$") | not)
+          | sub("^\\s+"; "")
+          | select(test("^<") | not)]
+         | length' "$tp" 2>/dev/null
+}
+
+# Replaces any existing row for this session id (flock'd, so a background
+# LLM update from an earlier run of this hook can't race a fresh one),
+# preserving starred/name/note/tool -- a session `afx star`'d mid-conversation
+# must not lose its mark when the exit summary comes in.
+write_row () {
+  (
+    if command -v flock >/dev/null 2>&1; then
+      flock -w 5 200 || true
+    fi
+    local old starred name note tool detail
+    old="$([ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id == $s)' "$sessions" | tail -1)"
+    starred="$(jq -r '.starred // false' <<<"${old:-null}" 2>/dev/null)"
+    name="$(jq -r '.name // empty' <<<"${old:-null}" 2>/dev/null)"
+    note="$(jq -r '.note // empty' <<<"${old:-null}" 2>/dev/null)"
+    tool="$(jq -r '.tool // "claude"' <<<"${old:-null}" 2>/dev/null)"
+    # A resumed session re-triggers this heuristic write on every exit;
+    # keep whatever long-form detail an earlier async LLM pass already
+    # produced rather than blanking it out for the few seconds until that
+    # pass reruns and refreshes it.
+    detail="$(jq -r '.detail // empty' <<<"${old:-null}" 2>/dev/null)"
+    {
+      [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+      jq -nc --arg date "$(date '+%F %H:%M')" --arg sid "$sid" --arg dir "$cwd" \
+        --arg home "$home" --arg tool "$tool" --arg reason "$reason" --arg summary "$1" \
+        --arg detail "$detail" --argjson prompts "$(prompt_count)" \
+        --argjson starred "${starred:-false}" --arg name "$name" --arg note "$note" \
+        '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: $tool,
+          reason: $reason, summary: $summary,
+          detail: (if $detail == "" then null else $detail end),
+          prompts: $prompts,
+          starred: $starred,
+          name: (if $name == "" then null else $name end),
+          note: (if $note == "" then null else $note end)}'
+    } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+  ) 200>"$sessions.lock" 2>/dev/null
+}
+
+# Helper function to atomically update the sessions file with new detail.
+update_session () {
+  local detail="$1"
+  old="$([ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id == $s)' "$sessions" | tail -1)"
+  {
+    [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+    jq -nc --arg date "$(jq -r '.date' <<<"${old:-null}" 2>/dev/null || echo "$(date '+%F %H:%M')")" \
+      --arg sid "$sid" --arg dir "$cwd" --arg home "$home" --arg tool "$(jq -r '.tool // "claude"' <<<"${old:-null}" 2>/dev/null)" \
+      --arg reason "$reason" --arg summary "$(jq -r '.summary // empty' <<<"${old:-null}" 2>/dev/null)" \
+      --arg detail "$detail" --argjson prompts "$(jq -r '.prompts // 0' <<<"${old:-null}" 2>/dev/null)" \
+      --argjson starred "$(jq -r '.starred // false' <<<"${old:-null}" 2>/dev/null)" \
+      --arg name "$(jq -r '.name // empty' <<<"${old:-null}" 2>/dev/null)" \
+      --arg note "$(jq -r '.note // empty' <<<"${old:-null}" 2>/dev/null)" \
+      '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: $tool,
+        reason: $reason, summary: $summary,
+        detail: (if $detail == "" then null else $detail end),
+        prompts: $prompts,
+        starred: $starred,
+        name: (if $name == "" then null else $name end),
+        note: (if $note == "" then null else $note end)}'
+  } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+}
+
+first="$(user_and_assistant_text | head -1 | tr '\t' ' ' | cut -c1-100)"
+write_row "${first:--}"
+
+if [ "${AFX_AUTOSUMMARY:-llm}" = llm ] && command -v claude >/dev/null 2>&1; then
+  # Extract recent user and assistant messages from the transcript to build context for recap.
+  excerpt="$(jq -r 'select(.type == "user" or .type == "assistant")
+                   | select(.isSidechain != true) | .message.content
+                   | if type == "string" then .
+                     else (map(select(.type == "text") | .text) | join(" ")) end' \
+              "$tp" 2>/dev/null | tail -40 | cut -c1-2000 | tr '\n' ' ')"
+
+  if [ -n "$excerpt" ]; then
+    # Launch async background job to ask Claude for a recap.
+    helper="$(dirname "$(readlink -f "$0")")/afx-summarize-async"
+    if [ -x "$helper" ]; then
+      # Use nohup on macOS, setsid on Linux for proper detachment.
+      if command -v setsid >/dev/null 2>&1; then
+        setsid "$helper" "$sid" "$sessions" "$cwd" "$home" "$reason" \
+          <<<"$excerpt" >/dev/null 2>&1 &
+        disown
+      else
+        nohup "$helper" "$sid" "$sessions" "$cwd" "$home" "$reason" \
+          <<<"$excerpt" >/dev/null 2>&1 &
+      fi
+    fi
+  fi
+fi

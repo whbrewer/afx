@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# afx UserPromptSubmit hook — see README's "Session journal" section.
+#
+# Writes an early row after the session's *first* prompt, using that
+# prompt's own text (truncated, no LLM call) as the summary and
+# "in_progress" as the reason. Exists because SessionEnd never fires if
+# the session dies without a clean exit (e.g. a dropped SSH connection),
+# which otherwise loses the session entirely — the first prompt usually
+# carries the session's main intent anyway, so it's a reasonable summary
+# to have on record even if nothing else ever runs.
+#
+# Fires on every prompt, so on the 2nd+ prompt of a session this exits
+# immediately once it sees a row already exists for this session id. If
+# afx-sessionend does fire later, its preserve-on-write logic
+# overwrites this row's date/reason/summary but keeps starred/name/note —
+# never two rows for one session.
+
+[ -n "$AFX_IN_HOOK" ] && exit 0  # must not recurse into our own claude -p
+
+. "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+_afx_migrate 2>/dev/null
+
+IN="$(cat)"
+sid="$(jq -r '.session_id // empty' <<<"$IN")"
+tp="$(jq -r '.transcript_path // empty' <<<"$IN")"
+cwd="$(jq -r '.cwd // empty' <<<"$IN")"
+prompt="$(jq -r '.prompt // empty' <<<"$IN")"
+[ -n "$sid" ] && [ -n "$tp" ] || exit 0
+home="${tp%/projects/*}"
+sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+
+[ -f "$sessions" ] && jq -e --arg s "$sid" 'select(.session_id == $s)' "$sessions" \
+  >/dev/null 2>&1 && exit 0
+
+summary="$(printf '%s' "$prompt" | tr '\t\n' '  ' | sed 's/^[[:space:]]*//' | cut -c1-100)"
+[ -n "$summary" ] || exit 0
+
+(
+  flock -w 5 200 || true
+  {
+    [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+    jq -nc --arg date "$(date '+%F %H:%M')" --arg sid "$sid" --arg dir "$cwd" \
+      --arg home "$home" --arg summary "$summary" \
+      '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: "claude",
+        reason: "in_progress", summary: $summary, prompts: 1, starred: false,
+        name: null, note: null}'
+  } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+) 200>"$sessions.lock"
