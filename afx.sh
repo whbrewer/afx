@@ -287,6 +287,21 @@ _afx_display_dir () {
   printf '%s' "$dir"
 }
 
+_afx_fg () {
+  # $1 $2 $3 = R G B, $4 = nearest xterm 256-color index. 24-bit
+  # truecolor only when $COLORTERM says the terminal actually renders it
+  # -- tmux and a plain "xterm-256color" TERM (still the common default,
+  # even on terminals that could do better) routinely don't, and either
+  # drop \033[38;2;...m entirely or render it as the wrong color, which
+  # is why AFX_PALETTE could look like it wasn't doing anything. The
+  # 256-color fallback is understood by effectively everything that
+  # claims 256-color support to begin with.
+  case "${COLORTERM:-}" in
+    truecolor|24bit) printf '\033[38;2;%d;%d;%dm' "$1" "$2" "$3" ;;
+    *)                printf '\033[38;5;%dm' "$4" ;;
+  esac
+}
+
 _afx_first_msg () {
   # First real user message of a session file ($1), one line, trimmed.
   if _afx_is_codex "$1"; then
@@ -518,14 +533,14 @@ afx_list () {
     # contrast against a dark vs. light terminal background.
     [ -n "${AFX_PALETTE:-}" ] || { [ -f "$HOME/.afx/settings" ] && . "$HOME/.afx/settings"; }
     if [ "${AFX_PALETTE:-dark}" = light ]; then
-      c_hash=$'\033[38;2;35;86;115m'    # Hydro
-      c_mark=$'\033[38;2;166;33;144m'   # Plasma
+      c_hash="$(_afx_fg 35 86 115 23)"     # Hydro
+      c_mark="$(_afx_fg 166 33 144 126)"   # Plasma
     else
-      c_hash=$'\033[38;2;167;251;196m'  # Mist
-      c_mark=$'\033[38;2;45;105;161m'   # Infinity
+      c_hash="$(_afx_fg 167 251 196 158)"  # Mist
+      c_mark="$(_afx_fg 45 105 161 25)"    # Infinity
     fi
     c_dim=$'\033[2m'
-    c_warn=$'\033[38;2;235;93;42m'      # Spark, same in both palettes
+    c_warn="$(_afx_fg 235 93 42 166)"      # Spark, same in both palettes
     c_reset=$'\033[0m'
     c_invert=$'\033[7m'  # swapped fg/bg, for the table header row
   fi
