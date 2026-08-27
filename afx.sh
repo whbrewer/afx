@@ -511,10 +511,21 @@ afx_list () {
   # cancels out in column -t's width math instead of skewing it.
   local c_hash="" c_mark="" c_dim="" c_warn="" c_reset="" c_invert=""
   if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    c_hash=$'\033[33m'   # yellow, like git's commit hash
-    c_mark=$'\033[36m'   # cyan, for the starred indicator
+    # Palette: $AFX_PALETTE if already set in the environment wins;
+    # otherwise ~/.afx/settings may set it (a small sourced shell file,
+    # e.g. a line reading `AFX_PALETTE=light`); otherwise "dark". Colors
+    # are ORNL brand secondary/accent hues, chosen per palette for
+    # contrast against a dark vs. light terminal background.
+    [ -n "${AFX_PALETTE:-}" ] || { [ -f "$HOME/.afx/settings" ] && . "$HOME/.afx/settings"; }
+    if [ "${AFX_PALETTE:-dark}" = light ]; then
+      c_hash=$'\033[38;2;35;86;115m'    # Hydro
+      c_mark=$'\033[38;2;166;33;144m'   # Plasma
+    else
+      c_hash=$'\033[38;2;167;251;196m'  # Mist
+      c_mark=$'\033[38;2;45;105;161m'   # Infinity
+    fi
     c_dim=$'\033[2m'
-    c_warn=$'\033[1;31m'
+    c_warn=$'\033[38;2;235;93;42m'      # Spark, same in both palettes
     c_reset=$'\033[0m'
     c_invert=$'\033[7m'  # swapped fg/bg, for the table header row
   fi
