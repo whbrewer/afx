@@ -259,8 +259,14 @@ another command), and `NO_COLOR=1` turns colors off. Colors are drawn
 from ORNL's brand palette and come in a `dark` variant (default, for a
 dark terminal background) and a `light` one; set `AFX_PALETTE=light` in
 the environment, or add the same line to `~/.afx/settings` (a small
-shell file sourced automatically, if present), to switch. `make
-uninstall-hook` removes all three hooks.
+shell file sourced automatically, if present), to switch. Want an exact
+shade instead of one of the two built-ins? Set `AFX_HASH_COLOR` the same
+way, to `#RRGGBB`, `RRGGBB`, or `R,G,B` — it overrides just the hash
+color, regardless of `AFX_PALETTE`. True 24-bit color is only used when
+`$COLORTERM` is `truecolor`/`24bit`; otherwise every color (built-in or
+custom) is rendered as the nearest of xterm's standard 256 colors, which
+basically every terminal claiming 256-color support handles correctly.
+`make uninstall-hook` removes all three hooks.
 
 The SessionEnd hook itself always returns in well under a second: it
 writes the heuristic summary synchronously, then — if an LLM summary is
