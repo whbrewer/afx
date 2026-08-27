@@ -255,7 +255,11 @@ session at the top of the table, `afx list -l -r` matches real
 `git log --reverse` and puts the oldest session first. Like git, both
 views color the hash (and mark) and page through `$PAGER`/`less` when
 run at a terminal — plain, unpaged text otherwise (piping to a file or
-another command), and `NO_COLOR=1` turns colors off. `make
+another command), and `NO_COLOR=1` turns colors off. Colors are drawn
+from ORNL's brand palette and come in a `dark` variant (default, for a
+dark terminal background) and a `light` one; set `AFX_PALETTE=light` in
+the environment, or add the same line to `~/.afx/settings` (a small
+shell file sourced automatically, if present), to switch. `make
 uninstall-hook` removes all three hooks.
 
 The SessionEnd hook itself always returns in well under a second: it
