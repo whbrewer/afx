@@ -48,11 +48,16 @@
 #                          oldest first.
 #   afx push [hash] [--project <id>] [--allow-secret <finding-id>]...
 #                          push a Claude Code session to artifax.dev
-#                          (artifax.dev's PLAN-SESSIONS.md). Needs
-#                          $ARTIFAX_API_TOKEN (a personal access token with
-#                          the sessions:write scope -- see the
-#                          artifax-publish skill for how to create one --
-#                          plus projects:write unless --project is given).
+#                          (artifax.dev's PLAN-SESSIONS.md), then also sync
+#                          this project's local memory (Claude's own
+#                          auto-memory files under this dir's memory/,
+#                          filtered to type: project/reference only -- see
+#                          _afx_push_memory). Needs $ARTIFAX_API_TOKEN (a
+#                          personal access token with the sessions:write
+#                          scope -- see the artifax-publish skill for how to
+#                          create one -- plus projects:write unless
+#                          --project is given, plus memory:write if there's
+#                          local memory to sync).
 #                          --project is optional: omit it (and
 #                          $ARTIFAX_PROJECT_ID) and the first push creates a
 #                          project of one, remembered in
@@ -74,7 +79,13 @@
 #                          the API host (default https://artifax.dev).
 #   afx pull <project-id-or-hash> [session-id-prefix] [--into <dir>]
 #                          the inverse of push: pull a session back down
-#                          from artifax.dev and make it resumable here.
+#                          from artifax.dev and make it resumable here,
+#                          then also writes the project's memory (if the
+#                          token has memory:read; skipped otherwise) into
+#                          this dir's own local memory/, so a teammate
+#                          pulling on a fresh machine gets the same
+#                          accumulated project context available to their
+#                          own future sessions, not just the raw history.
 #                          Needs $ARTIFAX_API_TOKEN with the sessions:read
 #                          scope. The first argument takes either a real
 #                          artifax project id, OR the exact same local HASH
@@ -1135,6 +1146,119 @@ _afx_session_project_map_set () {
   _afx_unlock "$f"
 }
 
+# --- project memory: pushed alongside a session, pulled alongside a bundle ----------
+#
+# Reuses Claude Code's own local auto-memory files -- one markdown file per entry under
+# <config_dir>/projects/<munged cwd>/memory/*.md, YAML frontmatter (name/description/
+# metadata.type) then a body -- rather than a separate afx-owned store. Only
+# metadata.type: project|reference is ever pushed: type: user|feedback describes the
+# working relationship with one specific person, not a fact about the project, and
+# never leaves this machine. Non-fatal on any failure here: a memory sync problem must
+# never fail the session push/pull it rides alongside.
+
+# Prints one JSON array (possibly empty, "[]") of {name,kind,description,body} built
+# from every eligible *.md file in $2's memory dir. $1/$2 are the same ($home, $dir)
+# pair _afx_proj_dir already takes.
+_afx_memory_read_local () {
+  local home="$1" dir="$2"
+  local mem_dir; mem_dir="$(_afx_proj_dir "$home" "$dir")/memory"
+  local entries="[]"
+  [ -d "$mem_dir" ] || { printf '%s' "$entries"; return 0; }
+
+  local f
+  for f in "$mem_dir"/*.md; do
+    [ -f "$f" ] || continue
+    [ "$(basename "$f")" = "MEMORY.md" ] && continue
+
+    local fm_end; fm_end="$(awk '/^---$/{c++; if(c==2){print NR; exit}}' "$f")"
+    [ -n "$fm_end" ] || continue # not well-formed frontmatter: skip silently, don't fail the push
+
+    local head; head="$(sed -n "1,${fm_end}p" "$f")"
+    local name kind description
+    name="$(sed -n 's/^name:[[:space:]]*//p' <<<"$head" | head -1 | sed 's/^"\(.*\)"$/\1/')"
+    kind="$(sed -n 's/^[[:space:]]*type:[[:space:]]*//p' <<<"$head" | head -1)"
+    description="$(sed -n 's/^description:[[:space:]]*//p' <<<"$head" | head -1 | sed 's/^"\(.*\)"$/\1/')"
+    [ "$kind" = "project" ] || [ "$kind" = "reference" ] || continue
+    [ -n "$name" ] || continue
+
+    local body_start=$((fm_end + 1))
+    [ -z "$(sed -n "${body_start}p" "$f")" ] && body_start=$((body_start + 1)) # skip one leading blank line, if present
+    local body_file; body_file="$(mktemp)"
+    tail -n "+${body_start}" "$f" > "$body_file"
+
+    entries="$(jq -n --argjson entries "$entries" --arg name "$name" --arg kind "$kind" --arg description "$description" --rawfile body "$body_file" \
+      '$entries + [{name: $name, kind: $kind, description: $description, body: $body}]')"
+    rm -f "$body_file"
+  done
+  printf '%s' "$entries"
+}
+
+# Pushes whatever _afx_memory_read_local finds for ($home, $dir) into project $2.
+_afx_push_memory () {
+  local api_url="$1" project_id="$2" home="$3" dir="$4"
+  local entries; entries="$(_afx_memory_read_local "$home" "$dir")"
+  local n; n="$(jq 'length' <<<"$entries")"
+  [ "$n" -gt 0 ] || return 0
+
+  echo "afx push: pushing $n memory entries..."
+  local resp status
+  resp="$(curl -sS -w '\n%{http_code}' -X POST "$api_url/api/v1/projects/$project_id/memory" \
+    -H "Authorization: Bearer $ARTIFAX_API_TOKEN" -H "Content-Type: application/json" \
+    -d "$(jq -n --argjson entries "$entries" '{entries: $entries}')")"
+  status="$(tail -1 <<<"$resp")"
+  resp="$(sed '$d' <<<"$resp")"
+  if [ "$status" = 200 ]; then
+    echo "afx push: memory synced: $(jq -r '[.items[] | "\(.name):\(.status)"] | join(", ")' <<<"$resp")"
+  else
+    echo "afx push: memory push failed ($status): $resp -- session itself still pushed fine" >&2
+  fi
+}
+
+# Writes every entry in $1 (a bundle response's .memory array, already fetched by the
+# caller -- no separate request needed) into $3's local memory dir under $2, recreating
+# each file's frontmatter and appending an index line to MEMORY.md if one isn't there
+# already (never touches an existing index line, matching _afx_register_claude_project's
+# own "never disturb what's already there" care).
+_afx_pull_memory () {
+  local bundle_resp="$1" home="$2" dir="$3" project_id="$4"
+  local count; count="$(jq '.memory | length' <<<"$bundle_resp" 2>/dev/null || echo 0)"
+  [ "$count" -gt 0 ] || return 0
+
+  local mem_dir; mem_dir="$(_afx_proj_dir "$home" "$dir")/memory"
+  mkdir -p "$mem_dir"
+  local index_file="$mem_dir/MEMORY.md"
+  [ -f "$index_file" ] || : > "$index_file"
+
+  local i name description kind body modified
+  for ((i = 0; i < count; i++)); do
+    name="$(jq -r ".memory[$i].name" <<<"$bundle_resp")"
+    kind="$(jq -r ".memory[$i].kind" <<<"$bundle_resp")"
+    body="$(jq -r ".memory[$i].body" <<<"$bundle_resp")"
+    modified="$(jq -r ".memory[$i].updated_at" <<<"$bundle_resp")"
+    description="$(jq -r ".memory[$i].description" <<<"$bundle_resp")"
+    local description_escaped="${description//\"/\\\"}"
+
+    {
+      printf -- '---\n'
+      printf 'name: %s\n' "$name"
+      printf 'description: "%s"\n' "$description_escaped"
+      printf 'metadata: \n'
+      printf '  node_type: memory\n'
+      printf '  type: %s\n' "$kind"
+      printf '  originSessionId: pulled-from-artifax-project-%s\n' "$project_id"
+      printf '  modified: %s\n' "$modified"
+      printf -- '---\n'
+      printf '\n'
+      printf '%s\n' "$body"
+    } >"$mem_dir/$name.md"
+
+    if ! grep -qF "($name.md)" "$index_file" 2>/dev/null; then
+      printf -- '- [%s](%s.md) — %s\n' "$(tr '-' ' ' <<<"$name")" "$name" "$description" >>"$index_file"
+    fi
+  done
+  echo "afx pull: pulled $count memory entries into $mem_dir"
+}
+
 afx_push () {
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local hash_arg="" project_id="${ARTIFAX_PROJECT_ID:-}" project_explicit=0
@@ -1304,6 +1428,10 @@ afx_push () {
     409) echo "afx push: diverged: the server's copy of this session has grown differently than yours. $(jq -r '.error.message' <<<"$push_resp")" >&2; return 1 ;;
     *) echo "afx push: push failed ($push_status): $push_resp" >&2; return 1 ;;
   esac
+
+  # Session push succeeded (the two return-1 cases above never reach here): also sync
+  # this project's local memory, same command, no separate step.
+  _afx_push_memory "$api_url" "$project_id" "$home" "$cwd_dir"
 }
 
 # --- afx pull: pull a session from artifax.dev and make it resumable here (§22 phase S2) ---
@@ -1494,6 +1622,10 @@ afx_pull () {
 
   local afx_sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   _afx_sessions_row_upsert "$afx_sessions" "$(date '+%F %H:%M')" "$external_id" "$into_dir" "$claude_home" claude pulled_from_artifax "$summary"
+
+  # bundle_resp was already fetched above to find this session -- its .memory array (if
+  # the token has memory:read; empty otherwise) rides along, no extra request needed.
+  _afx_pull_memory "$bundle_resp" "$claude_home" "$into_dir" "$project_id"
 
   echo "afx pull: pulled. resume with:"
   echo "  cd $into_dir && claude --resume $external_id"

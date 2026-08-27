@@ -109,11 +109,18 @@ afx jobs [-n N] [-r] [pattern]  # list background jobs (Bash calls run with
 afx push [hash] [--project <id>] [--allow-secret <finding-id>]...
                       # push a Claude Code session to artifax.dev, for
                       # sharing/collaboration/reproducibility (see
-                      # artifax.dev's PLAN-SESSIONS.md). Needs
-                      # $ARTIFAX_API_TOKEN (a personal access token with
-                      # the sessions:write scope -- see the
+                      # artifax.dev's PLAN-SESSIONS.md), then also syncs
+                      # this project's local memory -- Claude's own
+                      # auto-memory files under this dir's memory/,
+                      # filtered to type: project/reference only (a
+                      # user/feedback entry describes the working
+                      # relationship with one specific person, not a fact
+                      # about the project, and never leaves this machine).
+                      # Needs $ARTIFAX_API_TOKEN (a personal access token
+                      # with the sessions:write scope -- see the
                       # artifax-publish skill for how to create one --
-                      # plus projects:write unless --project is given).
+                      # plus projects:write unless --project is given,
+                      # plus memory:write if there's local memory to sync).
                       # --project is optional: omit it (and
                       # $ARTIFAX_PROJECT_ID) and the first push creates a
                       # project of one, remembered in
@@ -137,8 +144,13 @@ afx push [hash] [--project <id>] [--allow-secret <finding-id>]...
                       # `https://artifax.dev`).
 afx pull <project-id-or-hash> [session-id-prefix] [--into <dir>]
                       # the inverse of push: pull a session back down from
-                      # artifax.dev and make it resumable here. Needs
-                      # $ARTIFAX_API_TOKEN with the sessions:read scope.
+                      # artifax.dev and make it resumable here, then also
+                      # writes the project's memory (if the token has
+                      # memory:read) into this dir's own local memory/, so
+                      # a teammate pulling on a fresh machine gets the same
+                      # accumulated project context available to their own
+                      # future sessions. Needs $ARTIFAX_API_TOKEN with the
+                      # sessions:read scope.
                       # The first argument takes either a real artifax
                       # project id, or the exact same local HASH `afx push
                       # <hash>` used -- resolved server-side to the project
