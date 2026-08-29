@@ -23,10 +23,14 @@
 #                          the bottom); each row's HASH is an `afx go`
 #                          shortcut, starred rows get a * beside it.
 #                          Last 20 by default ($AFX_LIST_LIMIT overrides
-#                          that default); -s limits to starred sessions,
+#                          that default); sessions run from a directory
+#                          literally named "tmp" are hidden by default
+#                          too (one-shot/background runs tend to land
+#                          there); -s limits to starred sessions,
 #                          -d limits to sessions run from $PWD, a
 #                          pattern filters (any of these lift the cap);
-#                          -a shows every session, uncapped; -n N
+#                          -a shows every session, uncapped, tmp dirs
+#                          included; -n N
 #                          overrides the count shown either way; -l
 #                          shows a git-log-style paragraph per session
 #                          instead of the oneline table, newest session
@@ -621,9 +625,13 @@ afx_list () {
   local use_cap=1
   [ "$limit_set" = 0 ] && { [ "$starred_only" = 1 ] || [ -n "$pattern" ] || [ "$show_all" = 1 ] || [ "$dir_only" = 1 ]; } && use_cap=0
   local filtered
+  # Sessions run from a dir literally named "tmp" (one-shot/background runs,
+  # e.g. `claude -p`, tend to land there) are noise in the default view --
+  # filtered out below unless -a is given as the escape hatch to see them.
   filtered="$(
     { if [ "$starred_only" = 1 ]; then jq -c 'select(.starred == true)' "$SESSIONS_FILE"
       else cat "$SESSIONS_FILE"; fi; } \
+    | { [ "$show_all" = 1 ] && cat || jq -c 'select((.dir | split("/") | last) != "tmp")'; } \
     | { [ "$dir_only" = 1 ] && jq -c --arg d "$PWD" 'select(.dir == $d)' || cat; } \
     | tac \
     | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; }

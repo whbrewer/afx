@@ -67,16 +67,19 @@ afx star [hash] [note...]   # star/un-star (toggle). Inside a session, plain
                       # un-star.
 afx go [hash]         # cd there and resume the session (any session's
                       # HASH from `afx list`, starred or not)
-afx list [-l|--long] [-s|--starred] [-r|--reverse] [-d|--dir] [-n N] [pattern]
+afx list [-l|--long] [-s|--starred] [-r|--reverse] [-a|--all] [-d|--dir] [-n N] [pattern]
                       # every session, oldest to newest (latest at the bottom);
-                      # last 20 by default. -s limits to starred sessions;
-                      # -d limits to sessions run from the current dir;
-                      # a pattern filters by substring (any of these lift
-                      # the cap); -n N overrides the count shown either way.
-                      # -l is a git-log-style paragraph view (full hash,
-                      # dir, untruncated summary), newest session first,
-                      # instead of the oneline table. -r reverses
-                      # whichever of those is the default order
+                      # last 20 by default. Sessions run from a dir literally
+                      # named "tmp" are hidden by default too (one-shot/
+                      # background runs tend to land there). -s limits to
+                      # starred sessions; -d limits to sessions run from the
+                      # current dir; a pattern filters by substring (any of
+                      # these lift the cap); -a shows every session,
+                      # uncapped, tmp dirs included; -n N overrides the
+                      # count shown either way. -l is a git-log-style
+                      # paragraph view (full hash, dir, untruncated summary),
+                      # newest session first, instead of the oneline table.
+                      # -r reverses whichever of those is the default order
 afx status            # is this session/dir starred? (inside a session: `! afx status`)
 afx rm <hash>         # permanently delete a session's row (asks for
                       # confirmation first). Unlike un-starring via
