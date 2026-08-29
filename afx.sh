@@ -59,12 +59,18 @@
 #                          --project is given, plus memory:write if there's
 #                          local memory to sync).
 #                          --project is optional: omit it (and
-#                          $ARTIFAX_PROJECT_ID) and the first push creates a
-#                          project of one, remembered in
-#                          ~/.afx/session-projects.json by session id, so
-#                          later pushes of the same session -- just
-#                          `afx push <hash>` -- land back in that same
-#                          project rather than a fresh one each time. Runs a
+#                          $ARTIFAX_PROJECT_ID) and afx first checks whether
+#                          this exact session, or this directory/repo, has
+#                          already been pushed before (~/.afx/session-
+#                          projects.json and ~/.afx/dir-projects.json,
+#                          respectively) and reuses that project if so;
+#                          only a directory/repo that's never been pushed
+#                          gets a fresh project of one. Either way the
+#                          project used is recorded under both maps, so a
+#                          later `afx push [hash]` -- from the same session
+#                          or a brand-new one in the same repo -- lands back
+#                          in that same project without needing --project
+#                          again. Runs a
 #                          client-side secret scan first and refuses to push
 #                          outright on any high-confidence finding (fix the
 #                          transcript, or re-run with
@@ -1236,6 +1242,35 @@ _afx_session_project_map_set () {
   _afx_unlock "$f"
 }
 
+# A repo's working tree root if $1 is inside one, else $1 itself -- so pushes
+# from any subdirectory of the same repo (or from the repo root every time)
+# share one directory-project mapping instead of one per exact cwd.
+_afx_repo_key () {
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$1"
+}
+
+# Same idea as the session-id map above, but keyed by _afx_repo_key instead
+# of session id -- so a brand-new session pushed from a directory/repo that's
+# already been pushed from before lands in that SAME project automatically,
+# rather than `afx push` auto-creating a fresh project-of-one for every
+# never-before-seen session. Checked only as a fallback after the session map
+# (a session explicitly re-targeted to a different project via --project
+# should keep going back there, not get overridden by the dir's default).
+_afx_dir_project_map_get () {
+  local f="$HOME/.afx/dir-projects.json"
+  [ -f "$f" ] || return 0
+  jq -r --arg d "$1" '.[$d] // empty' "$f" 2>/dev/null
+}
+
+_afx_dir_project_map_set () {
+  local f="$HOME/.afx/dir-projects.json"
+  mkdir -p "$HOME/.afx"
+  [ -f "$f" ] || echo '{}' > "$f"
+  _afx_lock "$f"
+  jq --arg d "$1" --arg p "$2" '.[$d] = $p' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  _afx_unlock "$f"
+}
+
 # --- project memory: pushed alongside a session, pulled alongside a bundle ----------
 #
 # Reuses Claude Code's own local auto-memory files -- one markdown file per entry under
@@ -1393,6 +1428,7 @@ afx_push () {
   local project_parent; project_parent="$(dirname "$cwd_dir")"
   local hostname_val; hostname_val="$(hostname 2>/dev/null || echo "")"
   local osuser_val; osuser_val="$(whoami 2>/dev/null || echo "")"
+  local dir_key; dir_key="$(_afx_repo_key "$cwd_dir")"
 
   # Pulled up front (used both for auto-project naming below and the push
   # metadata later) rather than computed twice.
@@ -1405,7 +1441,12 @@ afx_push () {
 
   if [ "$project_explicit" != 1 ]; then
     project_id="$(_afx_session_project_map_get "$sid")"
-    [ -n "$project_id" ] && echo "afx push: reusing project $project_id from a previous push of this session"
+    if [ -n "$project_id" ]; then
+      echo "afx push: reusing project $project_id from a previous push of this session"
+    else
+      project_id="$(_afx_dir_project_map_get "$dir_key")"
+      [ -n "$project_id" ] && echo "afx push: reusing project $project_id already on record for $dir_key"
+    fi
   fi
 
   echo "afx push: pushing ${sid:0:6} ($cwd_dir)${project_id:+ to project $project_id}"
@@ -1510,6 +1551,7 @@ afx_push () {
   # was last actually used rather than the map going stale.
   if [ "$push_status" = 200 ] || [ "$push_status" = 201 ]; then
     _afx_session_project_map_set "$sid" "$project_id"
+    _afx_dir_project_map_set "$dir_key" "$project_id"
   fi
 
   case "$push_status" in

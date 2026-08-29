@@ -122,12 +122,18 @@ afx push [hash] [--project <id>] [--allow-secret <finding-id>]...
                       # plus projects:write unless --project is given,
                       # plus memory:write if there's local memory to sync).
                       # --project is optional: omit it (and
-                      # $ARTIFAX_PROJECT_ID) and the first push creates a
-                      # project of one, remembered in
-                      # ~/.afx/session-projects.json by session id, so
-                      # later pushes of the same session -- just
-                      # `afx push <hash>` -- land back in that same
-                      # project rather than a fresh one each time. Runs a
+                      # $ARTIFAX_PROJECT_ID) and afx first checks whether
+                      # this exact session, or this directory/repo, has
+                      # already been pushed before
+                      # (~/.afx/session-projects.json and
+                      # ~/.afx/dir-projects.json, respectively) and reuses
+                      # that project if so; only a directory/repo that's
+                      # never been pushed gets a fresh project of one.
+                      # Either way the project used is recorded under both
+                      # maps, so a later `afx push [hash]` -- from the same
+                      # session or a brand-new one in the same repo --
+                      # lands back in that same project without needing
+                      # --project again. Runs a
                       # client-side secret scan first and refuses to push
                       # outright on any high-confidence finding -- fix the
                       # transcript, or re-run with
