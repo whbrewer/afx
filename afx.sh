@@ -1014,7 +1014,7 @@ afx_jobs () {
     local maxlen="${AFX_NOTE_MAXLEN:-52}"
     { printf '%s\tDIR\tCOMMAND\t%*s\n' "$hash_header" "$agewidth" AGE
       printf '%s\n' "$rows" \
-      | jq -r '[.date, .session_id, .dir, (.command | gsub("[\n\r\t]"; " "))] | join("")' \
+      | jq -r '[.date, .session_id, .dir, (.command | gsub("[\n\r\t]"; " "))] | join("")' \
       | while IFS=$'\x1f' read -r date sid dir command; do
           dir="$(_afx_display_dir "$dir" 0)"
           local age; age="$(printf '%*s' "$agewidth" "$(_afx_relative_date "$date")")"
