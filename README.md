@@ -52,6 +52,20 @@ not a move) if `~/.afx` doesn't exist yet — so starred sessions and
 history carry over, and xmarks keeps working independently of afx from
 then on.
 
+Want the old one-letter feel back? `afx-aliases.sh` maps xmarks' letters
+onto the matching `afx` subcommand (`xs` to `afx star`, `xg` to `afx go`,
+and so on, per DESIGN.md's verb table), so `make install` plus:
+
+```bash
+source ~/.local/bin/afx.sh
+source ~/.local/bin/afx-aliases.sh
+```
+
+gets you `xl`/`xg`/etc. again, just pointed at afx. Source it after
+`afx.sh` (and after `xmarks.sh`, if that's still sourced too) since these
+are plain aliases and the last `alias xg=...`/`function xg ()` to run
+wins the name.
+
 ## Usage
 
 ```bash

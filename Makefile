@@ -9,6 +9,7 @@ install:
 	install -d $(BINDIR)
 	install -m 644 afx.sh $(BINDIR)/afx.sh
 	install -m 755 afx $(BINDIR)/afx
+	install -m 644 afx-aliases.sh $(BINDIR)/afx-aliases.sh
 	@echo ''
 	@echo 'Installed to $(BINDIR).'
 	@echo 'For the full `afx go` (one that leaves your shell in the'
@@ -25,7 +26,7 @@ install:
 	@echo '  autoload -Uz compinit && compinit'
 
 uninstall:
-	rm -f $(BINDIR)/afx.sh $(BINDIR)/afx
+	rm -f $(BINDIR)/afx.sh $(BINDIR)/afx $(BINDIR)/afx-aliases.sh
 
 # Register the SessionEnd, UserPromptSubmit, and PostToolUse (Bash-only)
 # hooks in every ~/.claude* settings.json (backs each up to
