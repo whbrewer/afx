@@ -1491,8 +1491,13 @@ afx_push () {
     create_status="$(tail -1 <<<"$create_resp")"
     create_resp="$(sed '$d' <<<"$create_resp")"
     if [ "$create_status" != 201 ]; then
-      echo "afx push: couldn't auto-create a project ($create_status): $create_resp" >&2
-      echo "afx push: pass --project <id> explicitly, or check your token has the projects:write scope" >&2
+      if [ "$create_status" = 000 ]; then
+        echo "afx push: couldn't reach $api_url at all -- curl never got an HTTP response (connection reset/timeout/TLS failure)" >&2
+        echo "afx push: this looks like a network-level block (e.g. a firewall or proxy dropping this connection), not an API or token-scope error -- try a different network, or check whether this network requires an https_proxy" >&2
+      else
+        echo "afx push: couldn't auto-create a project ($create_status): $create_resp" >&2
+        echo "afx push: pass --project <id> explicitly, or check your token has the projects:write scope" >&2
+      fi
       return 1
     fi
     project_id="$(jq -r '.id' <<<"$create_resp")"
