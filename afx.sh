@@ -189,6 +189,17 @@ _afx_proj_dir () {
   printf '%s/projects/%s' "$1" "$(printf '%s' "$2" | sed 's/[^A-Za-z0-9]/-/g')"
 }
 
+_afx_trap_on_return () {
+  # bash's function-return trap is RETURN; zsh has no RETURN pseudo-signal,
+  # but special-cases an EXIT trap set *inside* a function to fire on that
+  # function's return instead of on shell exit. Pick whichever this shell has.
+  if [ -n "${ZSH_VERSION:-}" ]; then
+    trap "$1" EXIT
+  else
+    trap "$1" RETURN
+  fi
+}
+
 _afx_codex_latest () {
   # Newest codex session for cwd $2 under home $1. Codex files are date-
   # organized with no per-project dir, so scan newest-first (path order is
@@ -1469,7 +1480,7 @@ afx_push () {
   fi
 
   local tmpdir; tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
+  _afx_trap_on_return 'rm -rf "$tmpdir"'
   echo "afx push: gate 1: aliasing paths/host/user..."
   _afx_alias_paths "$file" "$tmpdir/aliased.jsonl" "$project_parent" "$hostname_val" "$osuser_val"
   echo "afx push: gate 1: shrinking large tool outputs..."
@@ -1750,7 +1761,7 @@ afx_pull () {
 
   echo "afx pull: pulling session ${sid_artifax:0:12} into $into_dir..."
   local tmpdir; tmpdir="$(mktemp -d)"
-  trap 'rm -rf "$tmpdir"' RETURN
+  _afx_trap_on_return 'rm -rf "$tmpdir"'
   curl -sS -o "$tmpdir/transcript.jsonl.gz" "$download_url" || { echo "afx pull: download failed" >&2; return 1; }
   gunzip -c "$tmpdir/transcript.jsonl.gz" > "$tmpdir/transcript.jsonl"
 
