@@ -207,6 +207,28 @@ _afx_is_codex () {
   head -c 200 "$1" 2>/dev/null | grep -q '"type":"session_meta"'
 }
 
+_afx_hash_len () {
+  # Shortest hash length (>=6) that's unique across every session id read
+  # from stdin (one per line, blanks ignored). Codex's session ids are
+  # time-ordered (ULID-style), so two Codex sessions started close
+  # together collide at 6 hex characters far more often than Claude's
+  # fully-random UUIDs do -- this extends just enough to disambiguate the
+  # ids actually being displayed/looked up, instead of paying for a wider
+  # HASH column unconditionally.
+  local n
+  n="$(jq -Rrs '
+    (split("\n") | map(select(length > 0))) as $ids
+    | ($ids | length) as $total
+    | if $total == 0 then empty
+      else
+        ($ids | map(length) | max) as $maxlen
+        | ([range(6; $maxlen + 1) | . as $n
+            | select(($ids | map(.[0:$n]) | unique | length) == $total)] | first) // $maxlen
+      end
+  ' 2>/dev/null)"
+  printf '%s' "${n:-6}"
+}
+
 _afx_account () {
   # Short display name for a home dir: ~/.claude-work → work, ~/.codex → default.
   local b; b="$(basename "$1")"
@@ -413,6 +435,7 @@ _afx_unlock () {
 afx_star () {
   _afx_migrate
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
   # A hash prefix naming an existing session, given outside a session, is
   # consumed as the target; every other argument (in-session always, or
   # anything left after a hash) is note text.
@@ -518,9 +541,9 @@ afx_star () {
   } > "$SESSIONS_FILE.tmp" && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
   if [ "$new_starred" = true ]; then
-    echo "starred ${sid:0:6} → $sid  [$tool/$(_afx_account "$home")]  ($markdir)"
+    echo "starred ${sid:0:$hash_len} → $sid  [$tool/$(_afx_account "$home")]  ($markdir)"
   else
-    echo "unstarred ${sid:0:6} (session kept — see afx list)"
+    echo "unstarred ${sid:0:$hash_len} (session kept — see afx list)"
   fi
 }
 
@@ -531,7 +554,11 @@ afx_go () {
   local hash="${1:-}" line
   if [ -z "$hash" ]; then
     if command -v fzf >/dev/null 2>&1; then
-      line="$(jq -r 'select(.starred == true) | [(.session_id[0:6]), (.note // .summary // "-"), (.summary // "-")] | @tsv' "$SESSIONS_FILE" \
+      # Must show enough of the id that the hash fed back below (matched
+      # via startswith, same as every other hash lookup) can't resolve to
+      # a different session than the one picked.
+      local hash_len; hash_len="$(jq -r '.session_id' "$SESSIONS_FILE" | _afx_hash_len)"
+      line="$(jq -r --argjson n "$hash_len" 'select(.starred == true) | [(.session_id[0:$n]), (.note // .summary // "-"), (.summary // "-")] | @tsv' "$SESSIONS_FILE" \
         | fzf --delimiter='\t' --with-nth=1,2,3)" || return 1
       hash="$(printf '%s' "$line" | cut -f1)"
     else
@@ -568,6 +595,7 @@ afx_go () {
 afx_list () {
   _afx_migrate
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
   local long=0 starred_only=0 reverse=0 limit="${AFX_LIST_LIMIT:-20}" limit_set=0 show_all=0 dir_only=0
   while :; do
     case "${1:-}" in
@@ -706,13 +734,13 @@ afx_list () {
       [ "${#w}" -gt "$agewidth" ] && agewidth="${#w}"
     done <<<"$(printf '%s\n' "$rows" | jq -r '.date' | while IFS= read -r w; do _afx_relative_date "$w"; printf '\n'; done)"
     { # The header's HASH cell must carry the same escape-code byte count
-      # as a data row's colored hash field (6 chars + mark, wrapped in
-      # c_hash/c_mark/c_reset) -- otherwise BSD/macOS `column -t`, which
+      # as a data row's colored hash field ($hash_len chars + mark, wrapped
+      # in c_hash/c_mark/c_reset) -- otherwise BSD/macOS `column -t`, which
       # (unlike GNU's) can't tell ANSI codes are invisible, measures the
       # header's plain "HASH" as much shorter than the data rows and pads
       # every column after it far too wide.
       local hash_header="HASH"
-      [ -n "$c_hash" ] && hash_header="${c_hash}$(printf '%-6s' HASH)${c_reset}${c_mark} ${c_reset}"
+      [ -n "$c_hash" ] && hash_header="${c_hash}$(printf "%-${hash_len}s" HASH)${c_reset}${c_mark} ${c_reset}"
       { if [ "$show_tool" = 1 ] && [ "$show_account" = 1 ]; then
           printf '%s\tAGENT\tACCOUNT\tDIR\tSUMMARY\tPROMPTS\t%*s\n' "$hash_header" "$agewidth" AGE
         elif [ "$show_tool" = 1 ]; then
@@ -740,7 +768,7 @@ afx_list () {
             # column whenever starred and unstarred rows are mixed.
             local mark=" "
             [ "$starred" = true ] && mark="*"
-            local hashfield="${c_hash}${sid:0:6}${c_reset}${c_mark}${mark}${c_reset}"
+            local hashfield="${c_hash}${sid:0:$hash_len}${c_reset}${c_mark}${mark}${c_reset}"
             [ -n "$home" ] || { [ "${tool:-claude}" = codex ] && home="$HOME/.codex" || home="$HOME/.claude"; }
             local account="$(_afx_account "$home")"
             if [ "$show_tool" = 1 ] && [ "$show_account" = 1 ]; then
@@ -906,6 +934,10 @@ afx_find () {
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local starred_sids=""
   [ -s "$SESSIONS_FILE" ] && starred_sids="$(jq -r 'select(.starred == true) | .session_id' "$SESSIONS_FILE" 2>/dev/null)"
+  # Same hash length `afx list` uses (against the full sessions store, not
+  # just what's found here) -- whatever's shown must stay resolvable by
+  # `afx go`/`afx rm`, which match against sessions.jsonl.
+  local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
 
   local total; total="$(printf '%s\n' "$grouped" | wc -l | tr -d ' ')"
   local rows="$grouped"
@@ -919,7 +951,7 @@ afx_find () {
 
   {
     local hash_header="HASH"
-    [ -n "$c_hash" ] && hash_header="${c_hash}$(printf '%-6s' HASH)${c_reset}${c_mark} ${c_reset}"
+    [ -n "$c_hash" ] && hash_header="${c_hash}$(printf "%-${hash_len}s" HASH)${c_reset}${c_mark} ${c_reset}"
     local maxlen="${AFX_NOTE_MAXLEN:-52}"
     { if [ "$show_tool" = 1 ]; then
         printf '%s\tAGENT\tDIR\tMATCH\t%*s\n' "$hash_header" "$agewidth" AGE
@@ -933,7 +965,7 @@ afx_find () {
         [ "$count" -gt 1 ] && shown="$shown (+$((count - 1)) more)"
         local mark=" "
         printf '%s\n' "$starred_sids" | grep -qxF -- "$sid" && mark="*"
-        local hashfield="${c_hash}${sid:0:6}${c_reset}${c_mark}${mark}${c_reset}"
+        local hashfield="${c_hash}${sid:0:$hash_len}${c_reset}${c_mark}${mark}${c_reset}"
         if [ "$show_tool" = 1 ]; then
           printf '%s\t%s\t%s\t%s\t%s\n' \
             "$hashfield" "$tool" "$dir" "$(_afx_truncate "$shown" "$maxlen")" "$age"
@@ -1012,6 +1044,8 @@ afx_jobs () {
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local starred_sids=""
   [ -s "$SESSIONS_FILE" ] && starred_sids="$(jq -r 'select(.starred == true) | .session_id' "$SESSIONS_FILE" 2>/dev/null)"
+  # Same hash length `afx list` uses -- see afx_find's comment above.
+  local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
 
   local agewidth=3 w
   while IFS= read -r w; do
@@ -1020,7 +1054,7 @@ afx_jobs () {
 
   {
     local hash_header="HASH"
-    [ -n "$c_hash" ] && hash_header="${c_hash}$(printf '%-6s' HASH)${c_reset}${c_mark} ${c_reset}"
+    [ -n "$c_hash" ] && hash_header="${c_hash}$(printf "%-${hash_len}s" HASH)${c_reset}${c_mark} ${c_reset}"
     local maxlen="${AFX_NOTE_MAXLEN:-52}"
     { printf '%s\tDIR\tCOMMAND\t%*s\n' "$hash_header" "$agewidth" AGE
       printf '%s\n' "$rows" \
@@ -1030,7 +1064,7 @@ afx_jobs () {
           local age="$(printf '%*s' "$agewidth" "$(_afx_relative_date "$date")")"
           local mark=" "
           printf '%s\n' "$starred_sids" | grep -qxF -- "$sid" && mark="*"
-          local hashfield="${c_hash}${sid:0:6}${c_reset}${c_mark}${mark}${c_reset}"
+          local hashfield="${c_hash}${sid:0:$hash_len}${c_reset}${c_mark}${mark}${c_reset}"
           printf '%s\t%s\t%s\t%s\n' "$hashfield" "$dir" "$(_afx_truncate "$command" "$maxlen")" "$age"
         done
     } | column -t -s"$(printf '\t')" -c 1000 \
@@ -1055,11 +1089,12 @@ afx_jobs () {
 afx_status () {
   _afx_migrate
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
   local hits
   local session_id="${CLAUDE_CODE_SESSION_ID:-}"
   if [ -n "$session_id" ]; then
-    hits="$(jq -r --arg s "$session_id" \
-      'select(.session_id == $s and .starred == true) | "  " + .session_id[0:6] + "  (" + (.note // .summary // "-") + ")"' \
+    hits="$(jq -r --arg s "$session_id" --argjson n "$hash_len" \
+      'select(.session_id == $s and .starred == true) | "  " + .session_id[0:$n] + "  (" + (.note // .summary // "-") + ")"' \
       "$SESSIONS_FILE" 2>/dev/null)"
     if [ -n "$hits" ]; then
       echo "this session is starred:"; printf '%s\n' "$hits"
@@ -1068,8 +1103,8 @@ afx_status () {
       return 1
     fi
   else
-    hits="$(jq -r --arg d "$PWD" \
-      'select(.dir == $d and .starred == true) | "  " + .session_id[0:6] + "  (" + (.note // .summary // "-") + ")"' \
+    hits="$(jq -r --arg d "$PWD" --argjson n "$hash_len" \
+      'select(.dir == $d and .starred == true) | "  " + .session_id[0:$n] + "  (" + (.note // .summary // "-") + ")"' \
       "$SESSIONS_FILE" 2>/dev/null)"
     if [ -n "$hits" ]; then
       echo "starred sessions for $PWD:"; printf '%s\n' "$hits"
@@ -1087,6 +1122,7 @@ afx_status () {
 afx_rm () {
   _afx_migrate
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
   local arg1="${1:-}"
   [ -n "$arg1" ] || { echo "usage: afx rm <hash>" >&2; return 1; }
   [ -s "$SESSIONS_FILE" ] || { echo "afx rm: no sessions yet" >&2; return 1; }
@@ -1103,7 +1139,7 @@ afx_rm () {
   # `read -p` prints the prompt in bash, but in zsh `-p` means "read from
   # the coprocess" instead -- printing the prompt separately works the
   # same way in both.
-  printf 'delete session %s (%s)? [y/N] ' "${sid:0:6}" "$desc"
+  printf 'delete session %s (%s)? [y/N] ' "${sid:0:$hash_len}" "$desc"
   read -r reply
   case "$reply" in
     y|Y|yes|YES) ;;
@@ -1113,7 +1149,7 @@ afx_rm () {
   jq -c --arg s "$sid" 'select(.session_id != $s)' "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" \
     && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
-  echo "deleted ${sid:0:6} (was: \"$desc\")"
+  echo "deleted ${sid:0:$hash_len} (was: \"$desc\")"
 }
 
 # --- afx push: push a session to artifax.dev (artifax.dev PLAN-SESSIONS.md §19/§20) ---
@@ -1849,7 +1885,8 @@ _afx_complete () {
     star|go|rm|push)
       local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
       [ -r "$f" ] || return 0
-      local hashes; hashes="$(jq -r '.session_id[0:6]' "$f" 2>/dev/null)"
+      local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
+      local hashes; hashes="$(jq -r --argjson n "$n" '.session_id[0:$n]' "$f" 2>/dev/null)"
       COMPREPLY=( $(compgen -W "$hashes" -- "$cur") )
       ;;
   esac
@@ -1872,8 +1909,9 @@ if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
       star|go|rm|push)
         local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
         [ -r "$f" ] || return 0
+        local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
         local -a hashes
-        hashes=($(jq -r '.session_id[0:6]' "$f" 2>/dev/null))
+        hashes=($(jq -r --argjson n "$n" '.session_id[0:$n]' "$f" 2>/dev/null))
         compadd -- "${hashes[@]}"
         ;;
     esac
