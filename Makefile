@@ -33,16 +33,16 @@ uninstall:
 # settings.json.bak first). Browse the journal with `afx list`, background
 # jobs with `afx jobs`.
 install-hook:
-	install -m 755 hooks/afx-sessionend $(BINDIR)/afx-sessionend
-	install -m 755 hooks/afx-summarize-async $(BINDIR)/afx-summarize-async
-	install -m 755 hooks/afx-userpromptsubmit $(BINDIR)/afx-userpromptsubmit
-	install -m 755 hooks/afx-posttooluse $(BINDIR)/afx-posttooluse
+	install -m 755 hooks/afx-claude-sessionend $(BINDIR)/afx-claude-sessionend
+	install -m 755 hooks/afx-claude-summarize-async $(BINDIR)/afx-claude-summarize-async
+	install -m 755 hooks/afx-claude-userpromptsubmit $(BINDIR)/afx-claude-userpromptsubmit
+	install -m 755 hooks/afx-claude-posttooluse $(BINDIR)/afx-claude-posttooluse
 	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
 	  [ -d $$d ] || continue; \
 	  s=$$d/settings.json; [ -f $$s ] || echo '{}' > $$s; \
 	  cp $$s $$s.bak; \
-	  jq --arg cmd "$(BINDIR)/afx-sessionend" --arg cmd2 "$(BINDIR)/afx-userpromptsubmit" \
-	     --arg cmd3 "$(BINDIR)/afx-posttooluse" \
+	  jq --arg cmd "$(BINDIR)/afx-claude-sessionend" --arg cmd2 "$(BINDIR)/afx-claude-userpromptsubmit" \
+	     --arg cmd3 "$(BINDIR)/afx-claude-posttooluse" \
 	     '.hooks.SessionEnd = ((.hooks.SessionEnd // []) | map(select((.hooks[0].command // "") != $$cmd))) + [{"hooks": [{"type": "command", "command": $$cmd}]}] | .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | map(select((.hooks[0].command // "") != $$cmd2))) + [{"hooks": [{"type": "command", "command": $$cmd2}]}] | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select((.hooks[0].command // "") != $$cmd3))) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": $$cmd3}]}]' \
 	    $$s.bak > $$s.new && mv $$s.new $$s && echo "hooks registered in $$s"; \
 	done
@@ -51,12 +51,12 @@ uninstall-hook:
 	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
 	  s=$$d/settings.json; [ -f $$s ] || continue; \
 	  cp $$s $$s.bak; \
-	  jq --arg cmd "$(BINDIR)/afx-sessionend" --arg cmd2 "$(BINDIR)/afx-userpromptsubmit" \
-	     --arg cmd3 "$(BINDIR)/afx-posttooluse" \
+	  jq --arg cmd "$(BINDIR)/afx-claude-sessionend" --arg cmd2 "$(BINDIR)/afx-claude-userpromptsubmit" \
+	     --arg cmd3 "$(BINDIR)/afx-claude-posttooluse" \
 	     '.hooks.SessionEnd = ((.hooks.SessionEnd // []) | map(select((.hooks[0].command // "") != $$cmd))) | .hooks.UserPromptSubmit = ((.hooks.UserPromptSubmit // []) | map(select((.hooks[0].command // "") != $$cmd2))) | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select((.hooks[0].command // "") != $$cmd3)))' \
 	    $$s.bak > $$s.new && mv $$s.new $$s && echo "hooks removed from $$s"; \
 	done
-	rm -f $(BINDIR)/afx-sessionend $(BINDIR)/afx-summarize-async $(BINDIR)/afx-userpromptsubmit $(BINDIR)/afx-posttooluse
+	rm -f $(BINDIR)/afx-claude-sessionend $(BINDIR)/afx-claude-summarize-async $(BINDIR)/afx-claude-userpromptsubmit $(BINDIR)/afx-claude-posttooluse
 
 # Register the SessionEnd and UserPromptSubmit hooks in every ~/.codex*
 # hooks.json (backs each up to hooks.json.bak first). No PostToolUse/jobs

@@ -5,7 +5,7 @@
 # synchronously, so this hook always returns in a fraction of a second and
 # can never be killed for running too long. If AFX_AUTOSUMMARY is
 # unset or "llm" (the default), it also launches a fully detached
-# background job (afx-summarize-async) that asks an LLM (haiku by
+# background job (afx-claude-summarize-async) that asks an LLM (haiku by
 # default; override with AFX_SUMMARY_MODEL) for a better <=12-word
 # summary plus a longer detail paragraph, and patches the row in place
 # once it's ready — after this hook, and possibly the whole claude
@@ -137,7 +137,7 @@ if [ "${AFX_AUTOSUMMARY:-llm}" = llm ] && command -v claude >/dev/null 2>&1; the
 
   if [ -n "$excerpt" ]; then
     # Launch async background job to ask Claude for a recap.
-    helper="$(dirname "$(readlink -f "$0")")/afx-summarize-async"
+    helper="$(dirname "$(readlink -f "$0")")/afx-claude-summarize-async"
     if [ -x "$helper" ]; then
       # Use nohup on macOS, setsid on Linux for proper detachment.
       if command -v setsid >/dev/null 2>&1; then

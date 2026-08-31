@@ -293,7 +293,7 @@ basically every terminal claiming 256-color support handles correctly.
 
 The SessionEnd hook itself always returns in well under a second: it
 writes the heuristic summary synchronously, then — if an LLM summary is
-wanted — launches a fully detached background job (`afx-summarize-async`,
+wanted — launches a fully detached background job (`afx-claude-summarize-async`,
 via `setsid`) that asks the LLM and patches the row in place once it's
 ready. This matters because SessionEnd hooks get killed if they run too
 long; a stalled or failed LLM call just leaves the heuristic summary in

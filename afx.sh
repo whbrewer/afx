@@ -138,7 +138,7 @@
 # else every existing ~/.claude*; $AFX_CODEX_HOMES else $CODEX_HOME
 # else every existing ~/.codex*. $AFX_SUMMARY_MODEL picks the model the
 # SessionEnd hook's background job uses for summary/detail (default
-# haiku, the cheapest/fastest tier); see hooks/afx-summarize-async.
+# haiku, the cheapest/fastest tier); see hooks/afx-claude-summarize-async.
 
 # Resolved inside each function (not at source time): Claude Code's shell
 # snapshots restore functions but not unexported variables, so a top-level

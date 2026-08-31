@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Background helper spawned (detached) by afx-sessionend:
+# Background helper spawned (detached) by afx-claude-sessionend:
 # asks Claude for a natural recap of the session, then patches it into
 # the sessions.jsonl file. Runs independent of the hook and Claude Code,
 # so it can take whatever time the LLM call needs. Any failure exits
@@ -25,7 +25,7 @@ fi
 
 update_detail () {
   old="$([ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id == $s)' "$sessions" | tail -1)"
-  # If the row is gone, afx-sessionend's synchronous write (which always
+  # If the row is gone, afx-claude-sessionend's synchronous write (which always
   # lands before this async job even starts) must have been removed since --
   # almost certainly `afx rm`, run while this job was still waiting on the
   # LLM call. Respect that deletion instead of resurrecting the row from

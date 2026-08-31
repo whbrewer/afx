@@ -11,7 +11,7 @@
 #
 # Fires on every prompt, so on the 2nd+ prompt of a session this exits
 # immediately once it sees a row already exists for this session id. If
-# afx-sessionend does fire later, its preserve-on-write logic
+# afx-claude-sessionend does fire later, its preserve-on-write logic
 # overwrites this row's date/reason/summary but keeps starred/name/note —
 # never two rows for one session.
 
