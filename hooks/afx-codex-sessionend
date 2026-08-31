@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# afx SessionEnd hook for Codex — see README's "Session journal" section.
+#
+# Mirrors hooks/afx-sessionend (fast synchronous heuristic row, then a
+# fully detached background job for an LLM recap) as a separate script
+# rather than a shared branching one, because the two real differences
+# touch almost every line that reads the transcript:
+#   - Codex's rollout format wraps each turn's text in an item_completed
+#     event (item.type == UserMessage / AgentMessage), not Claude's flat
+#     {type: "user"|"assistant"} records (verified against codex-cli
+#     0.149.1/0.151.0 rollouts, both TUI and `codex exec`).
+#   - the async recap asks Codex itself, via `codex exec --ephemeral` (so
+#     the recap call never creates its own afx-visible session and its
+#     rollout is never written to disk), instead of `claude -p`.
+# session_id/transcript_path/cwd/reason are otherwise the same field names
+# Claude Code's hook payload uses; home is derived by stripping
+# /sessions/... instead of /projects/... .
+
+[ -n "$AFX_IN_HOOK" ] && exit 0  # must not recurse into our own codex exec
+
+. "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+_afx_migrate 2>/dev/null
+
+IN="$(cat)"
+sid="$(jq -r '.session_id // empty' <<<"$IN")"
+tp="$(jq -r '.transcript_path // empty' <<<"$IN")"
+cwd="$(jq -r '.cwd // empty' <<<"$IN")"
+reason="$(jq -r '.reason // "exit"' <<<"$IN")"
+[ -n "$sid" ] && [ -f "$tp" ] || exit 0
+home="${tp%/sessions/*}"
+sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+
+user_and_assistant_text () {
+  jq -r 'select(.type == "event_msg" and .payload.type == "item_completed")
+         | .payload.item
+         | select(.type == "UserMessage" or .type == "AgentMessage")
+         | (.content // []) | map(select(.type == "text" or .type == "Text") | .text)
+         | join(" ")' \
+      "$tp" 2>/dev/null \
+    | sed 's/^[[:space:]]*//' | grep -v -e '^<' -e '^$'
+}
+
+# Number of real user prompts in this session -- mirrors afx-sessionend's
+# prompt_count, counting item_completed/UserMessage events entirely inside
+# jq for the same reason: a multi-line prompt must count as one prompt, not
+# one per embedded newline.
+prompt_count () {
+  jq -s '[.[] | select(.type == "event_msg" and .payload.type == "item_completed"
+                        and .payload.item.type == "UserMessage")] | length' \
+    "$tp" 2>/dev/null
+}
+
+# Replaces any existing row for this session id (flock'd), preserving
+# starred/name/note/tool -- a session `afx star`'d mid-conversation must
+# not lose its mark when the exit summary comes in.
+write_row () {
+  (
+    if command -v flock >/dev/null 2>&1; then
+      flock -w 5 200 || true
+    fi
+    local old starred name note tool detail
+    old="$([ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id == $s)' "$sessions" | tail -1)"
+    starred="$(jq -r '.starred // false' <<<"${old:-null}" 2>/dev/null)"
+    name="$(jq -r '.name // empty' <<<"${old:-null}" 2>/dev/null)"
+    note="$(jq -r '.note // empty' <<<"${old:-null}" 2>/dev/null)"
+    tool="$(jq -r '.tool // "codex"' <<<"${old:-null}" 2>/dev/null)"
+    detail="$(jq -r '.detail // empty' <<<"${old:-null}" 2>/dev/null)"
+    {
+      [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+      jq -nc --arg date "$(date '+%F %H:%M')" --arg sid "$sid" --arg dir "$cwd" \
+        --arg home "$home" --arg tool "$tool" --arg reason "$reason" --arg summary "$1" \
+        --arg detail "$detail" --argjson prompts "$(prompt_count)" \
+        --argjson starred "${starred:-false}" --arg name "$name" --arg note "$note" \
+        '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: $tool,
+          reason: $reason, summary: $summary,
+          detail: (if $detail == "" then null else $detail end),
+          prompts: $prompts,
+          starred: $starred,
+          name: (if $name == "" then null else $name end),
+          note: (if $note == "" then null else $note end)}'
+    } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+  ) 200>"$sessions.lock" 2>/dev/null
+}
+
+first="$(user_and_assistant_text | head -1 | tr '\t' ' ' | cut -c1-100)"
+write_row "${first:--}"
+
+if [ "${AFX_AUTOSUMMARY:-llm}" = llm ] && command -v codex >/dev/null 2>&1; then
+  excerpt="$(user_and_assistant_text | tail -40 | cut -c1-2000 | tr '\n' ' ')"
+
+  if [ -n "$excerpt" ]; then
+    helper="$(dirname "$(readlink -f "$0")")/afx-codex-summarize-async"
+    if [ -x "$helper" ]; then
+      if command -v setsid >/dev/null 2>&1; then
+        setsid "$helper" "$sid" "$sessions" "$cwd" "$home" "$reason" \
+          <<<"$excerpt" >/dev/null 2>&1 &
+        disown
+      else
+        nohup "$helper" "$sid" "$sessions" "$cwd" "$home" "$reason" \
+          <<<"$excerpt" >/dev/null 2>&1 &
+      fi
+    fi
+  fi
+fi

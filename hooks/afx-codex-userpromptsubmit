@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# afx UserPromptSubmit hook for Codex — see README's "Session journal" section.
+#
+# Same purpose as hooks/afx-userpromptsubmit (writes an early row after the
+# session's first prompt, using that prompt's own text as the summary, no
+# LLM call), kept as a separate script because Codex's hook payload and
+# Claude Code's differ in just enough places to make a single branching
+# script harder to follow than two short ones:
+#   - transcript_path points at ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl,
+#     so home is derived by stripping /sessions/... instead of /projects/...
+#   - session_id/cwd/prompt are otherwise identical field names to Claude's
+#     hook payload (verified against codex-cli 0.151.0).
+
+[ -n "$AFX_IN_HOOK" ] && exit 0  # must not recurse into our own codex exec
+
+. "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+_afx_migrate 2>/dev/null
+
+IN="$(cat)"
+sid="$(jq -r '.session_id // empty' <<<"$IN")"
+tp="$(jq -r '.transcript_path // empty' <<<"$IN")"
+cwd="$(jq -r '.cwd // empty' <<<"$IN")"
+prompt="$(jq -r '.prompt // empty' <<<"$IN")"
+[ -n "$sid" ] && [ -n "$tp" ] || exit 0
+home="${tp%/sessions/*}"
+sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+
+[ -f "$sessions" ] && jq -e --arg s "$sid" 'select(.session_id == $s)' "$sessions" \
+  >/dev/null 2>&1 && exit 0
+
+summary="$(printf '%s' "$prompt" | tr '\t\n' '  ' | sed 's/^[[:space:]]*//' | cut -c1-100)"
+[ -n "$summary" ] || exit 0
+
+(
+  flock -w 5 200 || true
+  {
+    [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+    jq -nc --arg date "$(date '+%F %H:%M')" --arg sid "$sid" --arg dir "$cwd" \
+      --arg home "$home" --arg summary "$summary" \
+      '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: "codex",
+        reason: "in_progress", summary: $summary, prompts: 1, starred: false,
+        name: null, note: null}'
+  } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+) 200>"$sessions.lock"

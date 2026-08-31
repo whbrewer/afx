@@ -299,6 +299,30 @@ ready. This matters because SessionEnd hooks get killed if they run too
 long; a stalled or failed LLM call just leaves the heuristic summary in
 place — the hook itself never waits on it.
 
+### Codex
+
+`make install-codex-hook` registers the same `SessionEnd` and
+`UserPromptSubmit` behavior for Codex, in every `~/.codex*` `hooks.json`
+(each backed up to `.bak` first, same as `install-hook`). Codex sessions
+then show up in `afx list`/`afx star`/`afx go` automatically, the same way
+Claude Code sessions already do, instead of needing a manual `afx star`
+run from a plain shell right after the session ends (see "Multiple
+accounts and tools" below for that fallback). The async recap asks Codex
+itself for the summary/detail, via `codex exec --ephemeral` (so the recap
+call never persists its own rollout file or shows up in `afx list`);
+`AFX_SUMMARY_MODEL` overrides its model the same way, but — unlike
+Claude's default of `haiku`, a stable cheap-tier alias every account has —
+there's no equivalent universal alias for `codex exec -m`, so leaving
+`AFX_SUMMARY_MODEL` unset just uses whatever model is already configured
+in `config.toml`. `make uninstall-codex-hook` removes both hooks.
+Installing a new hook changes what Codex will run non-interactively, so
+expect a one-time prompt to trust it the next time an interactive Codex
+session hits it.
+
+There's no Codex equivalent of the `PostToolUse`/background-job hook
+below — Codex's shell tool has no `run_in_background`-style flag to key
+off of, so `afx jobs` stays Claude Code-only.
+
 ## Background job tracking
 
 `make install-hook` also registers a `PostToolUse` hook, matched to just
@@ -327,7 +351,11 @@ coexist — otherwise it's dropped as a repeated no-op value).
 
 When saving from inside a Claude Code session, the session's own id and
 config dir are used (Codex doesn't export a session id to child shells, so
-there's no Codex equivalent). When guessing from a plain shell, `afx star`
+there's no Codex equivalent). With `make install-codex-hook` installed,
+Codex sessions get a row written automatically as they happen — the same
+as Claude Code — so this manual guessing is only needed for a Codex
+session that ended before the hook was installed, or when running without
+the hook at all. When guessing from a plain shell, `afx star`
 searches every existing `~/.claude*` and `~/.codex*` home and takes the
 newest session for the current dir, whichever tool it came from. Codex has
 no per-project session layout, so its side of the search scans recent

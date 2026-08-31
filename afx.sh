@@ -369,8 +369,13 @@ _afx_parse_color () {
 _afx_first_msg () {
   # First real user message of a session file ($1), one line, trimmed.
   if _afx_is_codex "$1"; then
-    jq -r 'select(.type == "event_msg" and .payload.type == "user_message")
-           | .payload.message' "$1" 2>/dev/null
+    # Codex wraps each turn's user text in an item_completed event whose
+    # item.type is UserMessage (not a top-level payload.type == "user_message"
+    # -- that shape doesn't exist in current Codex rollouts, verified against
+    # cli_version 0.149.1/0.151.0 rollout files).
+    jq -r 'select(.type == "event_msg" and .payload.type == "item_completed"
+                  and .payload.item.type == "UserMessage")
+           | .payload.item.content[]? | select(.type == "text") | .text' "$1" 2>/dev/null
   else
     jq -r 'select(.type == "user" and .isSidechain != true)
            | .message.content
@@ -855,10 +860,15 @@ afx_find () {
         local sid cwd
         sid="$(head -1 "$f" | jq -r '.payload.session_id // empty' 2>/dev/null)"
         cwd="$(head -1 "$f" | jq -r '.payload.cwd // empty' 2>/dev/null)"
+        # Same item_completed/UserMessage schema _afx_first_msg uses --
+        # there's no top-level payload.type == "user_message" in current
+        # Codex rollouts.
         jq -r --arg sid "$sid" --arg cwd "$cwd" --arg home "$home" --arg tool "$tool" '
-          select(.type == "event_msg" and .payload.type == "user_message")
+          select(.type == "event_msg" and .payload.type == "item_completed"
+                 and .payload.item.type == "UserMessage")
           | [.timestamp, $sid, $cwd, $home, $tool,
-             ((.payload.message // "") | gsub("[\n\r\t]"; " "))]
+             ((.payload.item.content // []) | map(select(.type == "text") | .text) | join(" ")
+              | gsub("[\n\r\t]"; " "))]
           | join("")' "$f" 2>/dev/null
       else
         jq -r --arg home "$home" --arg tool "$tool" '
