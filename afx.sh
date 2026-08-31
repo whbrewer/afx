@@ -686,7 +686,7 @@ afx_list () {
   local show_account=0
   if [ -n "$rows" ]; then
     local accounts
-    accounts="$(printf '%s\n' "$rows" | jq -r '[(.home // ""), (.tool // "claude")] | join("")' \
+    accounts="$(printf '%s\n' "$rows" | jq -r '[(.home // ""), (.tool // "claude")] | join("\u001f")' \
       | while IFS=$'\x1f' read -r h t; do
           [ -n "$h" ] || { [ "$t" = codex ] && h="$HOME/.codex" || h="$HOME/.claude"; }
           _afx_account "$h"
@@ -897,7 +897,7 @@ afx_find () {
           | [.timestamp, $sid, $cwd, $home, $tool,
              ((.payload.item.content // []) | map(select(.type == "text") | .text) | join(" ")
               | gsub("[\n\r\t]"; " "))]
-          | join("")' "$f" 2>/dev/null
+          | join("\u001f")' "$f" 2>/dev/null
       else
         jq -r --arg home "$home" --arg tool "$tool" '
           select(.type == "user" and .isSidechain != true)
@@ -906,7 +906,7 @@ afx_find () {
                | if type == "string" then .
                  else (map(select(.type == "text") | .text) | join(" ")) end)
               | gsub("[\n\r\t]"; " "))]
-          | join("")' "$f" 2>/dev/null
+          | join("\u001f")' "$f" 2>/dev/null
       fi
     done | grep -i -- "$pattern"
   )"
@@ -918,12 +918,12 @@ afx_find () {
   local grouped
   grouped="$(
     printf '%s\n' "$hits" | jq -R -s -r '
-      split("\n") | map(select(length > 0) | split(""))
+      split("\n") | map(select(length > 0) | split("\u001f"))
       | map({ts:.[0], sid:.[1], cwd:.[2], home:.[3], tool:.[4], text:.[5]})
       | group_by(.sid)
       | map(sort_by(.ts) as $g | $g[0] + {count: ($g | length)})
       | sort_by(.ts)
-      | .[] | [.ts, .sid, .cwd, .home, .tool, (.count | tostring), .text] | join("")
+      | .[] | [.ts, .sid, .cwd, .home, .tool, (.count | tostring), .text] | join("\u001f")
     '
   )"
 
