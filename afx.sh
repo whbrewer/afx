@@ -737,7 +737,7 @@ afx_list () {
             [ "$starred" = true ] && mark="*"
             local hashfield="${c_hash}${sid:0:6}${c_reset}${c_mark}${mark}${c_reset}"
             [ -n "$home" ] || { [ "${tool:-claude}" = codex ] && home="$HOME/.codex" || home="$HOME/.claude"; }
-            local account; account="$(_afx_account "$home")"
+            local account="$(_afx_account "$home")"
             if [ "$show_tool" = 1 ] && [ "$show_account" = 1 ]; then
               printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
                 "$hashfield" "${tool:-claude}" "$account" "$dir" "$(_afx_truncate "$shown" "$maxlen")" "$prompts" "$date"
@@ -917,8 +917,8 @@ afx_find () {
         printf '%s\tDIR\tMATCH\t%*s\n' "$hash_header" "$agewidth" AGE
       fi
       printf '%s\n' "$rows" | while IFS=$'\x1f' read -r ts sid cwd home tool count text; do
-        local dir; dir="$(_afx_display_dir "$cwd" 0)"
-        local age; age="$(printf '%*s' "$agewidth" "$(_afx_relative_date "${ts:0:10} ${ts:11:5}")")"
+        local dir="$(_afx_display_dir "$cwd" 0)"
+        local age="$(printf '%*s' "$agewidth" "$(_afx_relative_date "${ts:0:10} ${ts:11:5}")")"
         local shown="$text"
         [ "$count" -gt 1 ] && shown="$shown (+$((count - 1)) more)"
         local mark=" "
@@ -1017,7 +1017,7 @@ afx_jobs () {
       | jq -r '[.date, .session_id, .dir, (.command | gsub("[\n\r\t]"; " "))] | join("")' \
       | while IFS=$'\x1f' read -r date sid dir command; do
           dir="$(_afx_display_dir "$dir" 0)"
-          local age; age="$(printf '%*s' "$agewidth" "$(_afx_relative_date "$date")")"
+          local age="$(printf '%*s' "$agewidth" "$(_afx_relative_date "$date")")"
           local mark=" "
           printf '%s\n' "$starred_sids" | grep -qxF -- "$sid" && mark="*"
           local hashfield="${c_hash}${sid:0:6}${c_reset}${c_mark}${mark}${c_reset}"
