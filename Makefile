@@ -87,4 +87,32 @@ uninstall-codex-hook:
 	done
 	rm -f $(BINDIR)/afx-codex-sessionend $(BINDIR)/afx-codex-summarize-async $(BINDIR)/afx-codex-userpromptsubmit
 
-.PHONY: install uninstall install-hook uninstall-hook install-codex-hook uninstall-codex-hook
+# Register the SessionEnd and BeforeAgent hooks (Gemini's UserPromptSubmit
+# equivalent) in ~/.gemini/settings.json (backed up to .bak first). Only
+# ~/.gemini itself -- unlike Claude/Codex, Gemini CLI has no env var to
+# point it at a different home, so there's nothing to scan for multiple
+# accounts. No PostToolUse/jobs equivalent (same reasoning as Codex), and
+# no afx-star-from-a-plain-shell fallback either: Gemini's session files
+# don't record cwd anywhere the hook payload isn't the one telling us --
+# see README's "Session journal" section for the full explanation.
+install-gemini-hook:
+	install -m 755 hooks/afx-gemini-sessionend $(BINDIR)/afx-gemini-sessionend
+	install -m 755 hooks/afx-gemini-summarize-async $(BINDIR)/afx-gemini-summarize-async
+	install -m 755 hooks/afx-gemini-beforeagent $(BINDIR)/afx-gemini-beforeagent
+	@d=$(HOME)/.gemini; \
+	s=$$d/settings.json; [ -d $$d ] || mkdir -p $$d; [ -f $$s ] || echo '{}' > $$s; \
+	cp $$s $$s.bak; \
+	jq --arg cmd "$(BINDIR)/afx-gemini-sessionend" --arg cmd2 "$(BINDIR)/afx-gemini-beforeagent" \
+	   '.hooks.SessionEnd = ((.hooks.SessionEnd // []) | map(select((.hooks[0].command // "") != $$cmd))) + [{"hooks": [{"type": "command", "command": $$cmd}]}] | .hooks.BeforeAgent = ((.hooks.BeforeAgent // []) | map(select((.hooks[0].command // "") != $$cmd2))) + [{"hooks": [{"type": "command", "command": $$cmd2}]}]' \
+	  $$s.bak > $$s.new && mv $$s.new $$s && echo "gemini hooks registered in $$s"
+
+uninstall-gemini-hook:
+	@d=$(HOME)/.gemini; \
+	s=$$d/settings.json; [ -f $$s ] || exit 0; \
+	cp $$s $$s.bak; \
+	jq --arg cmd "$(BINDIR)/afx-gemini-sessionend" --arg cmd2 "$(BINDIR)/afx-gemini-beforeagent" \
+	   '.hooks.SessionEnd = ((.hooks.SessionEnd // []) | map(select((.hooks[0].command // "") != $$cmd))) | .hooks.BeforeAgent = ((.hooks.BeforeAgent // []) | map(select((.hooks[0].command // "") != $$cmd2)))' \
+	  $$s.bak > $$s.new && mv $$s.new $$s && echo "gemini hooks removed from $$s"
+	rm -f $(BINDIR)/afx-gemini-sessionend $(BINDIR)/afx-gemini-summarize-async $(BINDIR)/afx-gemini-beforeagent
+
+.PHONY: install uninstall install-hook uninstall-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook

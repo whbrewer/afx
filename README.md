@@ -5,7 +5,7 @@
 [![Requires: jq](https://img.shields.io/badge/requires-jq-orange.svg)](#install)
 
 artifax.dev's CLI: bashmarks-style bookmarks for coding-agent sessions
-(Claude Code and Codex CLI) — save a mark, later jump back with one
+(Claude Code, Codex CLI, and Gemini CLI) — save a mark, later jump back with one
 command that cd's into the directory *and* resumes the exact session —
 plus the client for pushing/pulling sessions to and from artifax.dev.
 
@@ -322,6 +322,42 @@ session hits it.
 There's no Codex equivalent of the `PostToolUse`/background-job hook
 below — Codex's shell tool has no `run_in_background`-style flag to key
 off of, so `afx jobs` stays Claude Code-only.
+
+### Gemini
+
+`make install-gemini-hook` registers the equivalent hooks for Gemini CLI
+in `~/.gemini/settings.json` (backed up to `.bak` first). Gemini has no
+`UserPromptSubmit` event; its `BeforeAgent` event ("after user submits a
+prompt, before planning") is the equivalent and carries the same
+`prompt`/`session_id`/`transcript_path`/`cwd` fields. `make
+uninstall-gemini-hook` removes both hooks. Gemini's own hook-trust model
+only warns about *project*-level hooks (`./.gemini/settings.json`); a
+user-level hook like this one runs immediately, no first-use prompt.
+
+Two real differences from Claude/Codex, both because Gemini's session
+storage doesn't give afx a formula to reconstruct a transcript path from
+just a session id and home the way `<claude-home>/projects/<munged-cwd>/
+<sid>.jsonl` or `<codex-home>/sessions/<date>/*<sid>.jsonl` do:
+
+- The row also stores the exact `transcript_path` the hook reported, and
+  `afx go` resumes a Gemini session with `gemini --session-file <path>`
+  instead of an id-based resume.
+- There's no plain-shell `afx star` fallback and no `afx find` support for
+  Gemini sessions — both need to locate a session transcript from just its
+  cwd, and Gemini's session files don't record cwd anywhere outside the
+  hook payload itself. A Gemini session only shows up in `afx list` if the
+  hook was installed and running when it happened.
+
+There's also no equivalent of `codex exec --ephemeral` for the async
+recap: Gemini CLI has no flag to skip persisting a session, so
+`afx-gemini-summarize-async`'s own `gemini -p ... --output-format json`
+call does leave behind a small throwaway session file (harmless — the
+same `AFX_IN_HOOK` recursion guard every hook uses keeps it out of
+`afx list`, it's just not fully invisible the way Codex's recap call is).
+Gemini also has no `run_in_background`-style tool flag, so — same as
+Codex — `afx jobs` doesn't cover it, and there's no per-account home
+override to support multiple Gemini accounts the way `CLAUDE_CONFIG_DIR`/
+`CODEX_HOME` do.
 
 ## Background job tracking
 

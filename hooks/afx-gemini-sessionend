@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# afx SessionEnd hook for Gemini CLI — see README's "Session journal"
+# section. Mirrors hooks/afx-sessionend/afx-codex-sessionend (fast
+# synchronous heuristic row, then a detached background LLM recap) as a
+# separate script because Gemini's transcript format is its own shape:
+#   - each turn's text is a standalone top-level line -- {type:"user",
+#     content:[{text:...}]} or {type:"gemini", content:"..." (a plain
+#     string, not an array)} -- not nested the way Claude/Codex/other
+#     records are. There are also redundant `{"$set": {messages: [...]}}`
+#     patch lines repeating earlier messages; those are skipped, since
+#     every real turn already has its own standalone line.
+#   - transcript_path points at <home>/tmp/<project-slug>/chats/
+#     session-*.jsonl, so home is derived by stripping /tmp/... instead
+#     of /projects/... or /sessions/... .
+#   - Gemini has no per-tool-id equivalent to Claude/Codex's transcript
+#     path formula (<home>/projects/<munged-cwd>/<sid>.jsonl,
+#     <home>/sessions/<date>/*<sid>.jsonl) -- there's no way to
+#     reconstruct a session's transcript path from its id and home alone.
+#     So this hook stores transcript_path on the row (preserved across
+#     future writes, like starred/name/note), and afx_go resumes Gemini
+#     sessions via `gemini --session-file <path>` instead of an id.
+# (Verified against gemini-cli 0.53.1's real hook payload and rollout
+# files; session_id/transcript_path/cwd/reason are otherwise the same
+# field names Claude Code's/Codex's hook payloads use.)
+#
+# Gemini hooks require valid JSON on stdout even though SessionEnd is
+# documented as "best effort" (the CLI won't wait for it) -- {} is always
+# printed before exit, same as afx-gemini-beforeagent.
+
+if [ -n "$AFX_IN_HOOK" ]; then echo '{}'; exit 0; fi
+
+. "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+_afx_migrate 2>/dev/null
+
+IN="$(cat)"
+sid="$(jq -r '.session_id // empty' <<<"$IN")"
+tp="$(jq -r '.transcript_path // empty' <<<"$IN")"
+cwd="$(jq -r '.cwd // empty' <<<"$IN")"
+reason="$(jq -r '.reason // "exit"' <<<"$IN")"
+if [ -z "$sid" ] || [ ! -f "$tp" ]; then echo '{}'; exit 0; fi
+home="${tp%/tmp/*}"
+sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+
+user_and_model_text () {
+  jq -r 'select(.type == "user" or .type == "gemini")
+         | (if .type == "user"
+            then ((.content // []) | map(.text // "") | join(" "))
+            else ((.content // "") | if type == "string" then . else tostring end)
+            end)' \
+      "$tp" 2>/dev/null \
+    | sed 's/^[[:space:]]*//' | grep -v -e '^<' -e '^$'
+}
+
+prompt_count () {
+  jq -s '[.[] | select(.type == "user")
+          | (((.content // []) | map(.text // "") | join(" ")) // "")
+          | select(test("^\\s*$") | not)
+          | sub("^\\s+"; "")
+          | select(test("^<") | not)]
+         | length' "$tp" 2>/dev/null
+}
+
+# Replaces any existing row for this session id (flock'd), preserving
+# starred/name/note/tool/transcript -- a session `afx star`'d mid-
+# conversation must not lose its mark when the exit summary comes in.
+write_row () {
+  (
+    if command -v flock >/dev/null 2>&1; then
+      flock -w 5 200 || true
+    fi
+    local old starred name note tool detail transcript
+    old="$([ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id == $s)' "$sessions" | tail -1)"
+    starred="$(jq -r '.starred // false' <<<"${old:-null}" 2>/dev/null)"
+    name="$(jq -r '.name // empty' <<<"${old:-null}" 2>/dev/null)"
+    note="$(jq -r '.note // empty' <<<"${old:-null}" 2>/dev/null)"
+    tool="$(jq -r '.tool // "gemini"' <<<"${old:-null}" 2>/dev/null)"
+    detail="$(jq -r '.detail // empty' <<<"${old:-null}" 2>/dev/null)"
+    transcript="$(jq -r '.transcript // empty' <<<"${old:-null}" 2>/dev/null)"
+    transcript="${transcript:-$tp}"
+    {
+      [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+      jq -nc --arg date "$(date '+%F %H:%M')" --arg sid "$sid" --arg dir "$cwd" \
+        --arg home "$home" --arg tool "$tool" --arg reason "$reason" --arg summary "$1" \
+        --arg detail "$detail" --argjson prompts "$(prompt_count)" \
+        --argjson starred "${starred:-false}" --arg name "$name" --arg note "$note" \
+        --arg transcript "$transcript" \
+        '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: $tool,
+          reason: $reason, summary: $summary,
+          detail: (if $detail == "" then null else $detail end),
+          prompts: $prompts,
+          starred: $starred,
+          name: (if $name == "" then null else $name end),
+          note: (if $note == "" then null else $note end),
+          transcript: $transcript}'
+    } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+  ) 200>"$sessions.lock" 2>/dev/null
+}
+
+first="$(user_and_model_text | head -1 | tr '\t' ' ' | cut -c1-100)"
+write_row "${first:--}"
+
+if [ "${AFX_AUTOSUMMARY:-llm}" = llm ] && command -v gemini >/dev/null 2>&1; then
+  excerpt="$(user_and_model_text | tail -40 | cut -c1-2000 | tr '\n' ' ')"
+
+  if [ -n "$excerpt" ]; then
+    helper="$(dirname "$(readlink -f "$0")")/afx-gemini-summarize-async"
+    if [ -x "$helper" ]; then
+      if command -v setsid >/dev/null 2>&1; then
+        setsid "$helper" "$sid" "$sessions" "$cwd" "$home" "$reason" \
+          <<<"$excerpt" >/dev/null 2>&1 &
+        disown
+      else
+        nohup "$helper" "$sid" "$sessions" "$cwd" "$home" "$reason" \
+          <<<"$excerpt" >/dev/null 2>&1 &
+      fi
+    fi
+  fi
+fi
+
+echo '{}'

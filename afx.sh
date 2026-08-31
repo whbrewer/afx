@@ -1,4 +1,4 @@
-# afx — a CLI for coding-agent sessions (Claude Code and Codex), and the
+# afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
 # client for artifax.dev.
 # Source from .bashrc:  source ~/.local/bin/afx.sh
 #
@@ -113,7 +113,12 @@
 #
 # All state lives in one file, ~/.afx/sessions.jsonl (one JSON object
 # per line, one per session, override with $AFX_SESSIONS):
-#   {date, session_id, dir, home, tool, reason, summary, detail, starred, note}
+#   {date, session_id, dir, home, tool, reason, summary, detail, starred,
+#    note, transcript}
+# transcript is only ever set for tool "gemini" -- unlike Claude/Codex,
+# Gemini has no formula to derive a session's transcript path from its id
+# and home, so afx-gemini-sessionend stores the exact path afx go needs
+# to resume it (`gemini --session-file <path>`).
 # date/reason/summary are auto-tracked by the hooks: the UserPromptSubmit
 # hook seeds a row right after the first prompt (reason "in_progress",
 # summary = that prompt's own text, no LLM call), so a session that dies
@@ -130,9 +135,11 @@
 # given, always wins over detail/summary for display; when absent,
 # listings fall back to detail, then the short auto summary -- so a
 # session never needs a manual description to be meaningfully listed.
-# tool is "claude" or "codex" (default "claude") and home is the
-# CLAUDE_CONFIG_DIR / CODEX_HOME the session lives in, so sessions from
-# different accounts and tools coexist and resume correctly.
+# tool is "claude", "codex", or "gemini" (default "claude") and home is
+# the CLAUDE_CONFIG_DIR / CODEX_HOME / ~/.gemini the session lives in, so
+# sessions from different accounts and tools coexist and resume
+# correctly. Gemini has no env var to point it at a different home, so
+# there's no multi-account support for it the way Claude/Codex have.
 #
 # Candidate homes when guessing: $AFX_CONFIG_DIRS (colon-separated)
 # else every existing ~/.claude*; $AFX_CODEX_HOMES else $CODEX_HOME
@@ -233,7 +240,7 @@ _afx_account () {
   # Short display name for a home dir: ~/.claude-work → work, ~/.codex → default.
   local b; b="$(basename "$1")"
   case "$b" in
-    .claude|.codex) echo default ;;
+    .claude|.codex|.gemini) echo default ;;
     .claude-*) echo "${b#.claude-}" ;;
     .codex-*) echo "${b#.codex-}" ;;
     *) echo "$b" ;;
@@ -582,6 +589,17 @@ afx_go () {
       return 1
     fi
     CODEX_HOME="$home" codex resume "$sid"
+  elif [ "$tool" = gemini ]; then
+    # Gemini has no formula to derive a session's transcript path from its
+    # id and home the way Claude/Codex do -- afx-gemini-sessionend stores
+    # the exact path on the row instead, and `--session-file` resumes it
+    # directly (verified against gemini-cli 0.53.1).
+    local transcript; transcript="$(jq -r '.transcript // empty' <<<"$line")"
+    if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
+      echo "afx go: gemini session transcript for $sid no longer exists — you're in $dir" >&2
+      return 1
+    fi
+    gemini --session-file "$transcript"
   else
     home="${home:-$HOME/.claude}"
     if [ ! -f "$(_afx_proj_dir "$home" "$dir")/$sid.jsonl" ]; then
@@ -1835,7 +1853,7 @@ afx_pull () {
 
 afx_help () {
   cat <<'EOF'
-afx — a CLI for coding-agent sessions (Claude Code and Codex), and the
+afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
 client for artifax.dev.
 
   afx star [hash] [note...]   star/un-star the current (or given) session

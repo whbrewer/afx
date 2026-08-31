@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# afx BeforeAgent hook for Gemini CLI — see README's "Session journal"
+# section. Gemini has no UserPromptSubmit event; BeforeAgent ("after user
+# submits a prompt, before planning") is its equivalent and carries the
+# same session_id/transcript_path/cwd/prompt fields (verified against
+# gemini-cli 0.53.1's real hook payload).
+#
+# Unlike Claude Code/Codex, Gemini hooks are synchronous and REQUIRE valid
+# JSON on stdout -- an empty or non-JSON stdout is treated as a parse
+# failure. Every exit path below prints {} (decision/continue both
+# default to "allow"/true, i.e. a pure no-op) before exiting, not just a
+# bare `exit 0`.
+
+if [ -n "$AFX_IN_HOOK" ]; then echo '{}'; exit 0; fi
+
+. "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+_afx_migrate 2>/dev/null
+
+IN="$(cat)"
+sid="$(jq -r '.session_id // empty' <<<"$IN")"
+tp="$(jq -r '.transcript_path // empty' <<<"$IN")"
+cwd="$(jq -r '.cwd // empty' <<<"$IN")"
+prompt="$(jq -r '.prompt // empty' <<<"$IN")"
+[ -n "$sid" ] && [ -n "$tp" ] || { echo '{}'; exit 0; }
+# Gemini's transcript lives at <home>/tmp/<project-slug>/chats/session-*.jsonl.
+home="${tp%/tmp/*}"
+sessions="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+
+if [ -f "$sessions" ] && jq -e --arg s "$sid" 'select(.session_id == $s)' "$sessions" >/dev/null 2>&1; then
+  echo '{}'; exit 0
+fi
+
+summary="$(printf '%s' "$prompt" | tr '\t\n' '  ' | sed 's/^[[:space:]]*//' | cut -c1-100)"
+if [ -z "$summary" ]; then echo '{}'; exit 0; fi
+
+(
+  flock -w 5 200 || true
+  {
+    [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+    jq -nc --arg date "$(date '+%F %H:%M')" --arg sid "$sid" --arg dir "$cwd" \
+      --arg home "$home" --arg summary "$summary" --arg transcript "$tp" \
+      '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: "gemini",
+        reason: "in_progress", summary: $summary, prompts: 1, starred: false,
+        name: null, note: null, transcript: $transcript}'
+  } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+) 200>"$sessions.lock"
+
+echo '{}'

@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Background helper spawned (detached) by afx-gemini-sessionend: mirrors
+# hooks/afx-summarize-async but asks Gemini itself for the recap, via
+# `gemini -p ... --output-format json`, which returns a single JSON
+# object with a `response` field (documented headless-mode behavior) --
+# no stdout-banner scraping needed. `--skip-trust` since this runs fully
+# detached and can't answer an interactive trust prompt, and
+# `AFX_IN_HOOK=1` so it can't recurse into afx-gemini-beforeagent/
+# -sessionend for its own throwaway turn.
+#
+# Unlike Codex's `--ephemeral`, Gemini CLI has no flag to skip persisting
+# a session file, so this call does leave behind a small throwaway
+# session under <home>/tmp/<cwd-slug>/chats/ -- harmless (the
+# AFX_IN_HOOK guard keeps it out of afx list), just not fully invisible
+# the way Codex's recap call is.
+#
+# As with afx-summarize-async, AFX_SUMMARY_MODEL is only passed through
+# when set; otherwise this uses whatever model the account already has
+# configured, for the same reason Codex's recap does -- no universal
+# cheap-tier alias to default to.
+#
+# Any failure exits quietly; the heuristic summary already written by the
+# hook stands.
+
+sid="$1" sessions="$2" cwd="$3" home="$4" reason="$5"
+excerpt="$(cat)"
+
+[ -d "$cwd" ] || exit 0
+
+model_args=()
+[ -n "${AFX_SUMMARY_MODEL:-}" ] && model_args=(-m "$AFX_SUMMARY_MODEL")
+
+prompt="$(printf 'Session transcript:\n%s\n\nWrite a concise recap paragraph of this session. Describe what was done, the approach, and the outcome. Keep it to 2-4 sentences, specific and technical. Respond with only the paragraph, no preamble.\n' "$excerpt")"
+
+response="$(cd "$cwd" && AFX_IN_HOOK=1 timeout 45 gemini -p "$prompt" \
+  --output-format json --skip-trust "${model_args[@]}" 2>/dev/null)"
+
+detail="$(jq -r '.response // empty' <<<"$response" 2>/dev/null \
+  | tr '\n' ' ' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | cut -c1-700)"
+
+[ -n "$detail" ] || exit 0
+
+# Patch the detail into the sessions file (preserve everything else).
+lock_cmd=""
+if command -v flock >/dev/null 2>&1; then
+  lock_cmd="flock -w 5 200"
+fi
+
+update_detail () {
+  old="$([ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id == $s)' "$sessions" | tail -1)"
+  # If the row is gone, afx-gemini-sessionend's synchronous write (which
+  # always lands before this async job even starts) must have been
+  # removed since -- almost certainly `afx rm`, run while this job was
+  # still waiting on the LLM call. Respect that deletion instead of
+  # resurrecting the row from scratch.
+  [ -n "$old" ] || exit 0
+  starred="$(jq -r '.starred // false' <<<"${old:-null}" 2>/dev/null)"
+  name="$(jq -r '.name // empty' <<<"${old:-null}" 2>/dev/null)"
+  note="$(jq -r '.note // empty' <<<"${old:-null}" 2>/dev/null)"
+  tool="$(jq -r '.tool // "gemini"' <<<"${old:-null}" 2>/dev/null)"
+  prompts="$(jq -r '.prompts // 0' <<<"${old:-null}" 2>/dev/null)"
+  date="$(jq -r '.date // empty' <<<"${old:-null}" 2>/dev/null)"
+  date="${date:-$(date '+%F %H:%M')}"
+  reason="$(jq -r '.reason // "exit"' <<<"${old:-null}" 2>/dev/null)"
+  summary="$(jq -r '.summary // empty' <<<"${old:-null}" 2>/dev/null)"
+  transcript="$(jq -r '.transcript // empty' <<<"${old:-null}" 2>/dev/null)"
+  {
+    [ -f "$sessions" ] && jq -c --arg s "$sid" 'select(.session_id != $s)' "$sessions"
+    jq -nc --arg date "$date" --arg sid "$sid" --arg dir "$cwd" \
+      --arg home "$home" --arg tool "$tool" --arg reason "$reason" --arg summary "$summary" \
+      --arg detail "$detail" --argjson prompts "${prompts:-0}" \
+      --argjson starred "${starred:-false}" --arg name "$name" --arg note "$note" \
+      --arg transcript "$transcript" \
+      '{date: $date, session_id: $sid, dir: $dir, home: $home, tool: $tool,
+        reason: $reason, summary: $summary,
+        detail: (if $detail == "" then null else $detail end),
+        prompts: $prompts,
+        starred: $starred,
+        name: (if $name == "" then null else $name end),
+        note: (if $note == "" then null else $note end),
+        transcript: (if $transcript == "" then null else $transcript end)}'
+  } > "$sessions.tmp" && mv "$sessions.tmp" "$sessions"
+}
+
+if [ -n "$lock_cmd" ]; then
+  ( $lock_cmd; update_detail ) 200>"$sessions.lock" 2>/dev/null
+else
+  update_detail
+fi
