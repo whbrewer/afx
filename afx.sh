@@ -38,10 +38,15 @@
 #                          oneline table above); -r reverses whichever
 #                          of those is the default order
 #   afx status             is this session / directory starred?
-#   afx rm <hash>          permanently delete a session's row (unlike
+#   afx rm [-D] <hash>     permanently delete a session's row (unlike
 #                          un-starring via `afx star`, this drops it from
 #                          `afx list` entirely -- summary/detail/note gone
-#                          for good). Asks for confirmation first.
+#                          for good). Asks for confirmation first. The row
+#                          is bookkeeping only -- the transcript itself
+#                          survives on disk and stays resumable via a bare
+#                          `claude --resume <sid>` -- unless -D is also
+#                          given, which deletes that transcript file too
+#                          (unrecoverable; mirrors git branch's -d/-D).
 #   afx find [-n N] [-r] <pattern>
 #                          search every session's actual transcript --
 #                          not just `afx list`'s summary/note/detail --
@@ -110,6 +115,28 @@
 #                          candidates when there's more than one to choose
 #                          from. `--into <dir>` picks where it lands
 #                          (default $PWD).
+#   afx cp <hash> <dest-home>
+#                          copy a project's Claude Code sessions to a
+#                          different local account -- e.g.
+#                          `afx cp abc123 work` copies every session for
+#                          that project (not just abc123) from its
+#                          current CLAUDE_CONFIG_DIR into
+#                          ~/.claude-work, registers it there so
+#                          `claude --resume` can find it, and repoints
+#                          those sessions' `afx go`/`afx list` entries at
+#                          the new home. dest-home is either a literal
+#                          path (works for any config dir, whatever it's
+#                          named -- CLAUDE_CONFIG_DIR isn't required to
+#                          follow the ~/.claude-<name> convention) or an
+#                          account short name, resolved against every
+#                          home afx already knows about (same accounts
+#                          `afx list`'s ACCOUNT column shows), falling
+#                          back to the ~/.claude(-<name>) convention only
+#                          as a last resort. Unlike push/pull this never
+#                          touches the network -- it's a plain
+#                          same-machine copy, and the source is left in
+#                          place; delete it yourself once the destination
+#                          is confirmed working.
 #
 # All state lives in one file, ~/.afx/sessions.jsonl (one JSON object
 # per line, one per session, override with $AFX_SESSIONS):
@@ -1136,28 +1163,66 @@ afx_status () {
 # afx rm: permanently delete a session's row by its `afx list` HASH --
 # unlike un-starring (which keeps the row, just drops the star), this
 # removes it from sessions.jsonl entirely, so it's gone from `afx list`
-# for good. Confirms first since there's no undo.
+# for good. Confirms first since there's no undo. The row is bookkeeping
+# only, not the transcript itself -- the underlying .jsonl survives on disk
+# untouched, resumable via a bare `claude --resume <sid>` even after
+# `afx rm`, unless -D is given: mirrors git branch's -d/-D split (-d drops
+# the pointer, -D also destroys the data behind it) since a plain -f would
+# read as "force/skip-prompt" the way it does on every other rm, not "also
+# delete more than usual".
 afx_rm () {
   _afx_migrate
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local hash_len; hash_len="$([ -f "$SESSIONS_FILE" ] && jq -r '.session_id' "$SESSIONS_FILE" 2>/dev/null | _afx_hash_len)"
-  local arg1="${1:-}"
-  [ -n "$arg1" ] || { echo "usage: afx rm <hash>" >&2; return 1; }
+  local purge=0 arg1=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -D) purge=1; shift ;;
+      -*) echo "afx rm: unknown option $1" >&2; return 1 ;;
+      *) if [ -z "$arg1" ]; then arg1="$1"; shift; else echo "afx rm: unexpected argument $1" >&2; return 1; fi ;;
+    esac
+  done
+  [ -n "$arg1" ] || { echo "usage: afx rm [-D] <hash>  (-D also deletes the transcript file itself -- unrecoverable)" >&2; return 1; }
   [ -s "$SESSIONS_FILE" ] || { echo "afx rm: no sessions yet" >&2; return 1; }
   local line; line="$(jq -c --arg h "$arg1" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
   [ -n "$line" ] || { echo "afx rm: no such session: $arg1" >&2; return 1; }
-  local sid desc
+  local sid dir home tool desc
   sid="$(jq -r '.session_id' <<<"$line")"
+  dir="$(jq -r '.dir' <<<"$line")"
+  home="$(jq -r '.home' <<<"$line")"
+  tool="$(jq -r '.tool // "claude"' <<<"$line")"
   # note/summary, not detail: matches whatever `afx list`'s compact table
   # (where this hash came from) actually showed for this row. .detail is
   # the long commit-message-style writeup meant for `afx list -l`'s
   # paragraph view, not a one-line confirmation prompt.
   desc="$(_afx_truncate "$(jq -r '.note // .summary // "-"' <<<"$line")" "${AFX_NOTE_MAXLEN:-52}")"
+
+  # Resolved before the prompt, not after, so a session whose transcript
+  # can't be located (moved, already gone, wrong tool metadata) tells the
+  # user that up front rather than after they've already confirmed a purge.
+  local transcript_file=""
+  if [ "$purge" = 1 ]; then
+    case "$tool" in
+      claude) transcript_file="$(_afx_proj_dir "$home" "$dir")/$sid.jsonl" ;;
+      codex) transcript_file="$(find "$home/sessions" -name "*$sid.jsonl" 2>/dev/null | head -1)" ;;
+      gemini) transcript_file="$(jq -r '.transcript // empty' <<<"$line")" ;;
+    esac
+  fi
+
   local reply
   # `read -p` prints the prompt in bash, but in zsh `-p` means "read from
   # the coprocess" instead -- printing the prompt separately works the
   # same way in both.
-  printf 'delete session %s (%s)? [y/N] ' "${sid:0:$hash_len}" "$desc"
+  if [ "$purge" = 1 ]; then
+    if [ -n "$transcript_file" ] && [ -f "$transcript_file" ]; then
+      printf 'delete session %s (%s) AND its transcript file (%s)? this cannot be undone [y/N] ' "${sid:0:$hash_len}" "$desc" "$transcript_file"
+    else
+      echo "afx rm: -D given but no transcript file found for ${sid:0:$hash_len} (tool=$tool) -- only the row will be removed" >&2
+      printf 'delete session %s (%s)? [y/N] ' "${sid:0:$hash_len}" "$desc"
+    fi
+  else
+    printf 'delete session %s (%s)? [y/N] ' "${sid:0:$hash_len}" "$desc"
+  fi
   read -r reply
   case "$reply" in
     y|Y|yes|YES) ;;
@@ -1167,7 +1232,12 @@ afx_rm () {
   jq -c --arg s "$sid" 'select(.session_id != $s)' "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" \
     && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
-  echo "deleted ${sid:0:$hash_len} (was: \"$desc\")"
+  if [ -n "$transcript_file" ] && [ -f "$transcript_file" ]; then
+    rm -f "$transcript_file"
+    echo "deleted ${sid:0:$hash_len} (was: \"$desc\") and its transcript file"
+  else
+    echo "deleted ${sid:0:$hash_len} (was: \"$desc\")"
+  fi
 }
 
 # --- afx push: push a session to artifax.dev (artifax.dev PLAN-SESSIONS.md §19/§20) ---
@@ -1851,6 +1921,118 @@ afx_pull () {
   echo "  (or: afx go ${external_id:0:6})"
 }
 
+# --- afx cp: copy a project's Claude Code sessions to a different local account ---
+#
+# Unlike push/pull (which go through artifax.dev and move one session at a time),
+# this is a same-machine copy: Claude Code sessions live under
+# <config_dir>/projects/<munged cwd>/, keyed by account (CLAUDE_CONFIG_DIR) --
+# migrating a project between accounts (e.g. ~/.claude-work -> ~/.claude-personal)
+# means copying that whole directory -- every session for that dir, not just the
+# one identified by <hash> -- to the destination home, then registering it in the
+# destination's .claude.json (see the comment above _afx_register_claude_project:
+# claude --resume refuses to find a transcript that's correctly placed but never
+# registered there).
+#
+# A copy, not a verified move: the source is left untouched. afx has no
+# copy-verify-then-delete primitive here, deliberately -- these transcripts aren't
+# under version control (unlike git mv's rename, there's no history to fall back
+# on if a bad destination or interrupted copy silently lost something), so
+# deleting the source is left to the caller once they've confirmed the
+# destination actually resumes.
+afx_cp () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_arg="${1:-}" dest_arg="${2:-}"
+  [ -n "$hash_arg" ] && [ -n "$dest_arg" ] \
+    || { echo "usage: afx cp <hash> <dest-home>  (dest-home: a known account name, or any literal path)" >&2; return 1; }
+  [ -s "$SESSIONS_FILE" ] || { echo "afx cp: no sessions yet" >&2; return 1; }
+
+  local line; line="$(jq -c --arg h "$hash_arg" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
+  [ -n "$line" ] || { echo "afx cp: no such session: $hash_arg" >&2; return 1; }
+  local dir src_home tool sid
+  sid="$(jq -r '.session_id' <<<"$line")"
+  dir="$(jq -r '.dir' <<<"$line")"
+  src_home="$(jq -r '.home' <<<"$line")"
+  tool="$(jq -r '.tool // "claude"' <<<"$line")"
+  [ "$tool" = claude ] || { echo "afx cp: only Claude Code sessions are supported right now (this is $tool)" >&2; return 1; }
+  src_home="${src_home:-$HOME/.claude}"
+
+  # A literal path always works, whatever the dir's actually named --
+  # CLAUDE_CONFIG_DIR isn't required to follow the ~/.claude-<name>
+  # convention (e.g. ~/foo is a legal config dir). A bare word is resolved
+  # as an account short name against homes afx actually knows about
+  # (_afx_claude_dirs' enumeration, plus any .home already logged in
+  # sessions.jsonl, which covers an oddly-named dir afx has already seen a
+  # session from), not a hardcoded pattern -- only falling back to that
+  # pattern, as a convenience guess, when nothing real matches.
+  local dest_home=""
+  case "$dest_arg" in
+    /*) dest_home="$dest_arg" ;;
+    "~"*) dest_home="${dest_arg/#\~/$HOME}" ;;
+  esac
+
+  local known_homes=""
+  if [ -z "$dest_home" ]; then
+    known_homes="$( { _afx_claude_dirs; [ -s "$SESSIONS_FILE" ] && jq -r 'select((.tool // "claude") == "claude") | .home' "$SESSIONS_FILE"; } | sort -u)"
+    local h acct match_home=""
+    while IFS= read -r h; do
+      [ -n "$h" ] || continue
+      acct="$(_afx_account "$h")"
+      if [ "$acct" = "$dest_arg" ]; then
+        if [ -n "$match_home" ] && [ "$match_home" != "$h" ]; then
+          echo "afx cp: ambiguous account name '$dest_arg' -- matches both $match_home and $h; pass a full path instead" >&2
+          return 1
+        fi
+        match_home="$h"
+      fi
+    done <<<"$known_homes"
+    dest_home="$match_home"
+    if [ -z "$dest_home" ]; then
+      if [ "$dest_arg" = default ] && [ -d "$HOME/.claude" ]; then
+        dest_home="$HOME/.claude"
+      elif [ -d "$HOME/.claude-$dest_arg" ]; then
+        dest_home="$HOME/.claude-$dest_arg"
+      fi
+    fi
+  fi
+
+  if [ -z "$dest_home" ]; then
+    echo "afx cp: no known account named '$dest_arg' -- pass a full path instead (e.g. ~/foo), or use one of the known accounts:" >&2
+    printf '%s\n' "$known_homes" | while IFS= read -r h; do [ -n "$h" ] && echo "  $(_afx_account "$h")  ($h)" >&2; done
+    return 1
+  fi
+  [ -d "$dest_home" ] || { echo "afx cp: $dest_home doesn't exist -- create the account first (run \`claude\` once with CLAUDE_CONFIG_DIR=$dest_home set)" >&2; return 1; }
+  [ "$dest_home" != "$src_home" ] || { echo "afx cp: source and destination are the same account ($src_home)" >&2; return 1; }
+
+  local src_proj_dir dest_proj_dir
+  src_proj_dir="$(_afx_proj_dir "$src_home" "$dir")"
+  [ -d "$src_proj_dir" ] || { echo "afx cp: no project directory found: $src_proj_dir" >&2; return 1; }
+  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+
+  local n; n="$(find "$src_proj_dir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')"
+  echo "afx cp: copying $n session(s) for $dir"
+  echo "  $src_proj_dir"
+  echo "  -> $dest_proj_dir"
+  mkdir -p "$dest_proj_dir"
+  cp -a "$src_proj_dir/." "$dest_proj_dir/" || { echo "afx cp: copy failed" >&2; return 1; }
+
+  _afx_register_claude_project "$dest_home" "$dir"
+
+  # Every afx-tracked session for this project (not just $hash_arg) now resumes
+  # from the destination -- matching afx_pull's own precedent of always pointing
+  # `home` at wherever a session most recently, verifiably, landed. The source
+  # copy on disk is untouched either way; only the bookkeeping moves.
+  _afx_lock "$SESSIONS_FILE"
+  jq -c --arg d "$dir" --arg sh "$src_home" --arg dh "$dest_home" \
+    'if .dir == $d and .home == $sh and (.tool // "claude") == "claude" then .home = $dh else . end' \
+    "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
+  _afx_unlock "$SESSIONS_FILE"
+
+  echo "afx cp: done. source left untouched at $src_proj_dir"
+  echo "afx cp: verify, then delete the source yourself once you're sure:"
+  echo "  CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid   # or: afx go ${hash_arg}"
+  echo "  rm -rf $src_proj_dir"
+}
+
 afx_help () {
   cat <<'EOF'
 afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
@@ -1860,13 +2042,14 @@ client for artifax.dev.
   afx go [hash]                cd to its dir and resume the session
   afx list [opts] [pattern]    list every session (see afx list --help)
   afx status                   is this session/dir starred?
-  afx rm <hash>                permanently delete a session's row
+  afx rm [-D] <hash>            permanently delete a session's row (-D also deletes the transcript file)
   afx find [-n N] [-r] <pat>   search transcripts for a real user prompt
   afx jobs [-n N] [-r] [pat]   list background jobs started from a session
   afx push [hash] [opts]       push a session to artifax.dev
   afx pull <project-id-or-hash> [opts]  pull a session back down from artifax.dev
+  afx cp <hash> <dest-home>    copy a project's sessions to another local account
 
-Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push.
+Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/mv.
 Run `source afx.sh` from .bashrc/.zshrc for `afx go` to actually cd your
 shell; see the README for full details and every option.
 EOF
@@ -1886,6 +2069,7 @@ afx () {
     jobs) afx_jobs "$@" ;;
     push) afx_push "$@" ;;
     pull) afx_pull "$@" ;;
+    cp) afx_cp "$@" ;;
     help|--help|-h|"") afx_help ;;
     *) echo "afx: unknown command: $cmd (see: afx help)" >&2; return 1 ;;
   esac
@@ -1896,11 +2080,11 @@ afx () {
 _afx_complete () {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp help" -- "$cur") )
     return 0
   fi
   case "${COMP_WORDS[1]}" in
-    star|go|rm|push)
+    star|go|rm|push|cp)
       local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
       [ -r "$f" ] || return 0
       local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
@@ -1920,11 +2104,11 @@ fi
 if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
   _afx_complete_zsh () {
     if [ "$CURRENT" -eq 2 ]; then
-      compadd star go list status rm find jobs push pull help
+      compadd star go list status rm find jobs push pull cp help
       return
     fi
     case "${words[2]}" in
-      star|go|rm|push)
+      star|go|rm|push|cp)
         local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
         [ -r "$f" ] || return 0
         local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
