@@ -1,9 +1,18 @@
 # afx — bashmarks-style install.
 #   make install     install to ~/.local/bin (override with PREFIX=...)
 #   make uninstall   remove it
+#   make test        run the bats test suite (tests/*.bats)
 
 PREFIX ?= $(HOME)/.local
 BINDIR  = $(PREFIX)/bin
+
+# Uses a system `bats` if already on PATH (e.g. installed via a package
+# manager); otherwise falls back to `npx bats`, which fetches bats-core
+# on demand without adding a package.json to this bash-only repo.
+BATS := $(shell command -v bats 2>/dev/null || echo "npx --yes bats")
+
+test:
+	$(BATS) tests/
 
 install:
 	install -d $(BINDIR)
@@ -115,4 +124,4 @@ uninstall-gemini-hook:
 	  $$s.bak > $$s.new && mv $$s.new $$s && echo "gemini hooks removed from $$s"
 	rm -f $(BINDIR)/afx-gemini-sessionend $(BINDIR)/afx-gemini-summarize-async $(BINDIR)/afx-gemini-beforeagent
 
-.PHONY: install uninstall install-hook uninstall-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook
+.PHONY: install uninstall install-hook uninstall-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook test

@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# A fake `curl` for the push/pull tests: routes on the request URL to a
+# canned response instead of touching artifax.dev, matching whichever
+# -w '\n%{http_code}' (body-then-status) or -o <file> (raw bytes, no
+# status line) convention afx.sh's real call actually uses for that
+# endpoint. Every invocation's raw args are appended to
+# $AFX_TEST_CURL_LOG (one line each) so a test can assert a call did or
+# didn't happen. Response bodies/statuses for the handful of branches
+# under test are overridden per-test via env vars (defaults below cover
+# the generic happy path).
+#
+# Each default is assigned via a plain `if [ -z ... ]` guard, never
+# `${VAR:-{...}}` -- bash's parameter-expansion parser miscounts braces
+# when the default word itself contains a literal `{...}` JSON object.
+# Confirmed both silent-corruption modes: as a plain argument it appends
+# a stray extra `}` once VAR is already set (`X=hi; echo "${X:-{\"a\":1}}"`
+# prints `hi}`), and via `:=` it instead TRUNCATES the assigned default
+# itself, dropping its closing `}` (`unset X; : "${X:={\"a\":1}}"` leaves
+# `X` as the invalid `{"a":1`, not `{"a":1}`).
+
+log="${AFX_TEST_CURL_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "$log"
+
+url=""
+outfile=""
+for a in "$@"; do
+  case "$a" in
+    http*://*) url="$a" ;;
+  esac
+done
+prev=""
+for a in "$@"; do
+  [ "$prev" = "-o" ] && outfile="$a"
+  prev="$a"
+done
+
+lookup_body="${AFX_TEST_LOOKUP_BODY:-}"
+[ -n "$lookup_body" ] || lookup_body='{"items":[]}'
+bundle_body="${AFX_TEST_BUNDLE_BODY:-}"
+[ -n "$bundle_body" ] || bundle_body='{"sessions":[],"memory":[]}'
+push_body="${AFX_TEST_PUSH_BODY:-}"
+[ -n "$push_body" ] || push_body='{"id":"sess_1","revision":1,"message_count":1,"event_count":1}'
+memory_body="${AFX_TEST_MEMORY_BODY:-}"
+[ -n "$memory_body" ] || memory_body='{"items":[]}'
+create_project_body="${AFX_TEST_CREATE_PROJECT_BODY:-}"
+[ -n "$create_project_body" ] || create_project_body='{"id":"proj_1"}'
+uploads_body="${AFX_TEST_UPLOADS_BODY:-}"
+[ -n "$uploads_body" ] || uploads_body='{"status":"upload","upload_url":"http://fake/put"}'
+
+case "$url" in
+  */api/v1/sessions\?*)
+    printf '%s\n%s' "$lookup_body" "${AFX_TEST_LOOKUP_STATUS:-200}" ;;
+  */api/v1/projects/*/bundle)
+    printf '%s\n%s' "$bundle_body" "${AFX_TEST_BUNDLE_STATUS:-200}" ;;
+  */api/v1/projects/*/sessions)
+    printf '%s\n%s' "$push_body" "${AFX_TEST_PUSH_STATUS:-201}" ;;
+  */api/v1/projects/*/memory)
+    printf '%s\n%s' "$memory_body" "${AFX_TEST_MEMORY_STATUS:-200}" ;;
+  */api/v1/projects)
+    printf '%s\n%s' "$create_project_body" "${AFX_TEST_CREATE_PROJECT_STATUS:-201}" ;;
+  */api/v1/uploads)
+    printf '%s\n%s' "$uploads_body" "${AFX_TEST_UPLOADS_STATUS:-200}" ;;
+  http://fake/put)
+    # afx push's PUT: -o /dev/null -w '%{http_code}' -- body is discarded by
+    # the real caller either way, only the status line is read back.
+    printf '%s' "${AFX_TEST_PUT_STATUS:-200}" ;;
+  http://fake/download)
+    # afx pull's download: -o <file>, no -w at all -- write real bytes to
+    # $outfile (from $AFX_TEST_DOWNLOAD_SRC) and print nothing to stdout.
+    [ -n "$AFX_TEST_DOWNLOAD_SRC" ] && [ -n "$outfile" ] && cp "$AFX_TEST_DOWNLOAD_SRC" "$outfile" ;;
+  *)
+    printf '%s\n%s' '{"error":"curl-stub: unhandled url '"$url"'"}' 599 ;;
+esac
