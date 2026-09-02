@@ -42,6 +42,7 @@ install:
 	@echo '  make install-claude-hook   # Claude Code'
 	@echo '  make install-codex-hook    # Codex'
 	@echo '  make install-gemini-hook   # Gemini CLI'
+	@echo '  make install-hooks         # all three'
 	@echo '----------------------------------------------------------------'
 
 uninstall:
@@ -134,4 +135,10 @@ uninstall-gemini-hook:
 	  $$s.bak > $$s.new && mv $$s.new $$s && echo "gemini hooks removed from $$s"
 	rm -f $(BINDIR)/afx-gemini-sessionend $(BINDIR)/afx-gemini-summarize-async $(BINDIR)/afx-gemini-beforeagent
 
-.PHONY: install uninstall install-claude-hook uninstall-claude-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook test
+# Convenience wrappers for anyone running more than one coding agent --
+# register (or remove) all three tools' hooks in one shot.
+install-hooks: install-claude-hook install-codex-hook install-gemini-hook
+
+uninstall-hooks: uninstall-claude-hook uninstall-codex-hook uninstall-gemini-hook
+
+.PHONY: install uninstall install-claude-hook uninstall-claude-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook install-hooks uninstall-hooks test
