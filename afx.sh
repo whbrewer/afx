@@ -729,7 +729,7 @@ afx_list () {
     esac
   done
   [ -s "$SESSIONS_FILE" ] || {
-    echo "afx list: no sessions yet — install the SessionEnd hook: make install-hook" >&2
+    echo "afx list: no sessions yet — install the SessionEnd hook: make install-claude-hook" >&2
     return 1
   }
   # Color (like git) only for an interactive terminal, and never if the
@@ -1110,7 +1110,7 @@ afx_find () {
 # with run_in_background: true) across every session, oldest first -- for
 # "I kicked this off last night, which session was it in?" without
 # needing to remember any keyword. One row per job (a session can start
-# several). Requires the PostToolUse hook (make install-hook) -- it's
+# several). Requires the PostToolUse hook (make install-claude-hook) -- it's
 # what populates jobs.jsonl in the first place.
 afx_jobs () {
   _afx_migrate
@@ -1132,7 +1132,7 @@ afx_jobs () {
 
   local jobs="${AFX_JOBS:-$HOME/.afx/jobs.jsonl}"
   [ -s "$jobs" ] || {
-    echo "afx jobs: no background jobs recorded yet -- install the PostToolUse hook: make install-hook" >&2
+    echo "afx jobs: no background jobs recorded yet -- install the PostToolUse hook: make install-claude-hook" >&2
     return 1
   }
 

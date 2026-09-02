@@ -224,7 +224,7 @@ directory and warns.
 
 ## Session journal: auto-summaries on exit (and before)
 
-`make install-hook` registers a `SessionEnd` hook and a `UserPromptSubmit`
+`make install-claude-hook` registers a `SessionEnd` hook and a `UserPromptSubmit`
 hook in every `~/.claude*` settings.json (each backed up to `.bak` first).
 When a Claude Code session ends, the SessionEnd hook updates that
 session's row with the real outcome: `reason`, an auto-generated
@@ -289,7 +289,7 @@ color, regardless of `AFX_PALETTE`. True 24-bit color is only used when
 `$COLORTERM` is `truecolor`/`24bit`; otherwise every color (built-in or
 custom) is rendered as the nearest of xterm's standard 256 colors, which
 basically every terminal claiming 256-color support handles correctly.
-`make uninstall-hook` removes all three hooks.
+`make uninstall-claude-hook` removes all three hooks.
 
 The SessionEnd hook itself always returns in well under a second: it
 writes the heuristic summary synchronously, then — if an LLM summary is
@@ -303,7 +303,7 @@ place — the hook itself never waits on it.
 
 `make install-codex-hook` registers the same `SessionEnd` and
 `UserPromptSubmit` behavior for Codex, in every `~/.codex*` `hooks.json`
-(each backed up to `.bak` first, same as `install-hook`). Codex sessions
+(each backed up to `.bak` first, same as `install-claude-hook`). Codex sessions
 then show up in `afx list`/`afx star`/`afx go` automatically, the same way
 Claude Code sessions already do, instead of needing a manual `afx star`
 run from a plain shell right after the session ends (see "Multiple
@@ -361,7 +361,7 @@ override to support multiple Gemini accounts the way `CLAUDE_CONFIG_DIR`/
 
 ## Background job tracking
 
-`make install-hook` also registers a `PostToolUse` hook, matched to just
+`make install-claude-hook` also registers a `PostToolUse` hook, matched to just
 the `Bash` tool so it's a no-op for every other tool call. It fires after
 every Bash call and, when that call was made with `run_in_background:
 true`, appends a row (`date`, `session_id`, `dir`, `command`) to

@@ -33,6 +33,13 @@ install:
 	@echo 'before the `source` line above:'
 	@echo ''
 	@echo '  autoload -Uz compinit && compinit'
+	@echo ''
+	@echo 'This only installs the CLI. To have `afx list` actually track your'
+	@echo 'sessions, also run the hook installer for whichever tool(s) you use:'
+	@echo ''
+	@echo '  make install-claude-hook   # Claude Code'
+	@echo '  make install-codex-hook    # Codex'
+	@echo '  make install-gemini-hook   # Gemini CLI'
 
 uninstall:
 	rm -f $(BINDIR)/afx.sh $(BINDIR)/afx $(BINDIR)/afx-aliases.sh
@@ -41,7 +48,7 @@ uninstall:
 # hooks in every ~/.claude* settings.json (backs each up to
 # settings.json.bak first). Browse the journal with `afx list`, background
 # jobs with `afx jobs`.
-install-hook:
+install-claude-hook:
 	install -m 755 hooks/afx-claude-sessionend $(BINDIR)/afx-claude-sessionend
 	install -m 755 hooks/afx-claude-summarize-async $(BINDIR)/afx-claude-summarize-async
 	install -m 755 hooks/afx-claude-userpromptsubmit $(BINDIR)/afx-claude-userpromptsubmit
@@ -56,7 +63,7 @@ install-hook:
 	    $$s.bak > $$s.new && mv $$s.new $$s && echo "hooks registered in $$s"; \
 	done
 
-uninstall-hook:
+uninstall-claude-hook:
 	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
 	  s=$$d/settings.json; [ -f $$s ] || continue; \
 	  cp $$s $$s.bak; \
@@ -124,4 +131,4 @@ uninstall-gemini-hook:
 	  $$s.bak > $$s.new && mv $$s.new $$s && echo "gemini hooks removed from $$s"
 	rm -f $(BINDIR)/afx-gemini-sessionend $(BINDIR)/afx-gemini-summarize-async $(BINDIR)/afx-gemini-beforeagent
 
-.PHONY: install uninstall install-hook uninstall-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook test
+.PHONY: install uninstall install-claude-hook uninstall-claude-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook test
