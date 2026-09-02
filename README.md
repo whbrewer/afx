@@ -32,6 +32,15 @@ fine but can't do that for its parent shell — which is why the `source`
 line above is still worth adding (put it above your bashrc's "not
 interactive" guard).
 
+**`make install` alone does not track any sessions.** `afx star`/`afx go`/
+`afx rm` work right away, but the journal `afx list` reads from
+(`~/.afx/sessions.jsonl`) only fills in once you also register the
+SessionEnd/UserPromptSubmit hooks for whichever coding agent(s) you use —
+run `make install-claude-hook` for Claude Code (and/or
+`install-codex-hook`, `install-gemini-hook`); see "Session journal" below
+for what each one does. `make install` prints this same reminder when it
+finishes.
+
 Requires `jq` (for first-message previews). `fzf` is optional — if
 present, `afx go` with no argument opens a fuzzy picker.
 

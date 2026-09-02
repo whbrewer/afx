@@ -34,12 +34,15 @@ install:
 	@echo ''
 	@echo '  autoload -Uz compinit && compinit'
 	@echo ''
-	@echo 'This only installs the CLI. To have `afx list` actually track your'
-	@echo 'sessions, also run the hook installer for whichever tool(s) you use:'
+	@echo '----------------------------------------------------------------'
+	@echo 'NOTE: this only installs the CLI -- `afx star`/`go`/`rm` work now,'
+	@echo 'but `afx list` stays empty until you also install a hook. Run the'
+	@echo 'installer for whichever coding agent(s) you use:'
 	@echo ''
 	@echo '  make install-claude-hook   # Claude Code'
 	@echo '  make install-codex-hook    # Codex'
 	@echo '  make install-gemini-hook   # Gemini CLI'
+	@echo '----------------------------------------------------------------'
 
 uninstall:
 	rm -f $(BINDIR)/afx.sh $(BINDIR)/afx $(BINDIR)/afx-aliases.sh
