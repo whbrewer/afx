@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# A fake `ssh` for the afx_scp/afx_rsync tests: every real call afx.sh makes
+# is exactly `ssh [-o k=v]... <target> <single-command-string>` (the command
+# is always pre-built into one string via `printf %q`/a literal, never
+# passed as several separate argv words) -- so this only has to find the
+# target and that one trailing command string, then actually run it, as if
+# it were a second machine, against a SEPARATE sandboxed $HOME
+# ($AFX_TEST_REMOTE_HOME) instead of this process's own. That's what makes
+# "the remote machine" a real, inspectable directory tree in these tests
+# rather than something mocked away.
+#
+# $AFX_TEST_SSH_UNREACHABLE_HOST, if set to the exact target passed, fails
+# the call the way a real dead/unreachable host would (exit 255, nothing
+# run) -- covers the "SSH connection itself failed" branch.
+#
+# $AFX_TEST_SSH_NO_REMOTE_AFX, if set, makes just the `command -v afx`
+# preflight check fail (exit 1) without touching anything else -- covers
+# "afx isn't installed/on \$PATH over there" as a distinct branch from a
+# dead connection.
+log="${AFX_TEST_SSH_LOG:-/dev/null}"
+printf '%s\n' "$*" >> "$log"
+
+target=""
+cmd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift 2; continue ;;
+    -*) shift; continue ;;
+    *) if [ -z "$target" ]; then target="$1"; else cmd="$1"; fi ;;
+  esac
+  shift
+done
+
+if [ -n "${AFX_TEST_SSH_UNREACHABLE_HOST:-}" ] && [ "$target" = "$AFX_TEST_SSH_UNREACHABLE_HOST" ]; then
+  echo "ssh: connect to host $target port 22: Connection refused" >&2
+  exit 255
+fi
+
+if [ -n "${AFX_TEST_SSH_NO_REMOTE_AFX:-}" ]; then
+  case "$cmd" in
+    "command -v afx"*) exit 1 ;;
+  esac
+fi
+
+env HOME="${AFX_TEST_REMOTE_HOME:-$HOME}" AFX_SESSIONS="" bash -c "$cmd"

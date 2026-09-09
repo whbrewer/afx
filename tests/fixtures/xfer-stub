@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# A fake `scp`/`rsync` for the afx_scp/afx_rsync tests -- install this same
+# file as both names. Real scp/rsync need an actual reachable sshd, which
+# these tests deliberately never spin up (see ssh-stub for why "the remote
+# machine" is just a second sandboxed $HOME on the same filesystem here).
+# afx.sh's own calls always look like `<flags>... <src-dir> <host>:<dest-parent>/`
+# with exactly one src arg and one host:path arg, so parsing out those two
+# and doing the equivalent local `cp -a` reproduces scp/rsync's actual
+# copy-src-dir-into-dest-parent semantics closely enough for these tests.
+log="${AFX_TEST_XFER_LOG:-/dev/null}"
+printf '%s %s\n' "$(basename "$0")" "$*" >> "$log"
+
+src=""
+dest_path=""
+for a in "$@"; do
+  case "$a" in
+    -*) ;;
+    *:*) dest_path="${a#*:}" ;;
+    *) src="$a" ;;
+  esac
+done
+[ -n "$src" ] && [ -n "$dest_path" ] || { echo "xfer-stub: couldn't parse args: $*" >&2; exit 1; }
+mkdir -p "$dest_path"
+cp -a "$src" "$dest_path/"

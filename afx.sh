@@ -2311,6 +2311,164 @@ EOF
   fi
 }
 
+# --- afx scp / afx rsync: migrate a project's Claude Code sessions to another --
+# --- machine over SSH, instead of via artifax.dev -------------------------------
+#
+# Same idea as afx cp/mv (copy a project's whole session directory so every
+# session for it, not just <hash>, comes along -- see the afx_cp comment for
+# why), but the destination is a different machine reached over SSH instead
+# of a different local account. Unlike push/pull, this never touches
+# artifax.dev at all: no API token, no server-side dedup, no gate-1 secret
+# scan (that gate exists because a push leaves your machine for a third
+# party's storage -- an scp/rsync to a host you already have SSH access to
+# doesn't).
+#
+# Registration (the .claude.json project entry + a sessions.jsonl row, so
+# `claude --resume`/`afx go` work immediately on the far side) can't happen
+# from here: it has to run ON the destination, so both commands shell out
+# over SSH to the exact same `afx` binary (see ./afx, the 9-line
+# non-interactive wrapper) that's required to already be installed and on
+# $PATH there -- afx_register_remote below is what that SSH call runs.
+#
+# A copy, not a verified move, same as afx_cp: the source is left on this
+# machine untouched. Verifying byte-for-byte across a network the way
+# afx_mv's local `diff -rq` does would need a second round-trip anyway, so
+# confirming the far side actually resumes -- then deleting the source -- is
+# left to the caller.
+
+# Invoked over SSH by afx scp/afx rsync once the files have landed on the
+# destination -- never run this by hand. Mirrors what afx_pull already does
+# locally after downloading a bundle.
+afx_register_remote () {
+  local home="${1:-}" dir="${2:-}" sid="${3:-}" tool="${4:-claude}" reason="${5:-migrated}"
+  [ -n "$home" ] && [ -n "$dir" ] && [ -n "$sid" ] \
+    || { echo "afx _register-remote: usage: afx _register-remote <home> <dir> <sid> [tool] [reason]" >&2; return 1; }
+  _afx_register_claude_project "$home" "$dir"
+  _afx_sessions_row_upsert "${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}" "$(date '+%F %H:%M')" \
+    "$sid" "$dir" "$home" "$tool" "$reason" ""
+  echo "afx _register-remote: registered ${sid:0:12} for $dir under $home"
+}
+
+afx_scp () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_arg="${1:-}" remote_arg="${2:-}"
+  [ -n "$hash_arg" ] && [ -n "$remote_arg" ] \
+    || { echo "usage: afx scp <hash> <user@host>[:<dest-home>]  (dest-home: an absolute path on the remote machine; default: same as the source's)" >&2; return 1; }
+  [ -s "$SESSIONS_FILE" ] || { echo "afx scp: no sessions yet" >&2; return 1; }
+  local c; for c in ssh scp jq; do
+    command -v "$c" >/dev/null 2>&1 || { echo "afx scp: $c is required" >&2; return 1; }
+  done
+
+  local line; line="$(jq -c --arg h "$hash_arg" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
+  [ -n "$line" ] || { echo "afx scp: no such session: $hash_arg" >&2; return 1; }
+  local dir src_home tool sid
+  sid="$(jq -r '.session_id' <<<"$line")"
+  dir="$(jq -r '.dir' <<<"$line")"
+  src_home="$(jq -r '.home' <<<"$line")"
+  tool="$(jq -r '.tool // "claude"' <<<"$line")"
+  [ "$tool" = claude ] || { echo "afx scp: only Claude Code sessions are supported right now (this is $tool)" >&2; return 1; }
+  src_home="${src_home:-$HOME/.claude}"
+
+  local ssh_target="$remote_arg" dest_home="$src_home"
+  case "$remote_arg" in
+    *:*) ssh_target="${remote_arg%%:*}"; dest_home="${remote_arg#*:}" ;;
+  esac
+
+  local src_proj_dir dest_proj_dir dest_parent
+  src_proj_dir="$(_afx_proj_dir "$src_home" "$dir")"
+  [ -d "$src_proj_dir" ] || { echo "afx scp: no project directory found: $src_proj_dir" >&2; return 1; }
+  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+  dest_parent="$(dirname "$dest_proj_dir")"
+
+  echo "afx scp: checking afx is reachable on $ssh_target..."
+  ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1' \
+    || { echo "afx scp: couldn't confirm afx is installed and on \$PATH on $ssh_target (or the SSH connection itself failed) -- afx scp requires afx already set up on the destination machine" >&2; return 1; }
+
+  ssh "$ssh_target" "$(printf 'mkdir -p %q' "$dest_parent")" \
+    || { echo "afx scp: couldn't create $dest_parent on $ssh_target" >&2; return 1; }
+
+  local n; n="$(find "$src_proj_dir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')"
+  echo "afx scp: copying $n session(s) for $dir"
+  echo "  $src_proj_dir"
+  echo "  -> $ssh_target:$dest_proj_dir"
+  scp -pr "$src_proj_dir" "$ssh_target:$dest_parent/" || { echo "afx scp: transfer failed" >&2; return 1; }
+
+  echo "afx scp: registering on $ssh_target..."
+  local remote_cmd; remote_cmd="$(printf 'afx _register-remote %q %q %q %q %q' \
+    "$dest_home" "$dir" "$sid" "$tool" "scp_from_$(hostname 2>/dev/null || echo unknown)")"
+  if ! ssh "$ssh_target" "$remote_cmd"; then
+    echo "afx scp: transfer succeeded but remote registration failed -- the files are already at $dest_proj_dir on $ssh_target; run this by hand there:" >&2
+    echo "  $remote_cmd" >&2
+    return 1
+  fi
+
+  echo "afx scp: done. resume on $ssh_target with:"
+  echo "  ssh -t $ssh_target 'CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid'"
+  echo "afx scp: source left untouched at $src_proj_dir"
+  echo "afx scp: verify it resumes over there, then delete the source yourself once you're sure:"
+  echo "  rm -rf $src_proj_dir"
+}
+
+afx_rsync () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_arg="${1:-}" remote_arg="${2:-}"
+  [ -n "$hash_arg" ] && [ -n "$remote_arg" ] \
+    || { echo "usage: afx rsync <hash> <user@host>[:<dest-home>]  (dest-home: an absolute path on the remote machine; default: same as the source's)" >&2; return 1; }
+  [ -s "$SESSIONS_FILE" ] || { echo "afx rsync: no sessions yet" >&2; return 1; }
+  local c; for c in ssh rsync jq; do
+    command -v "$c" >/dev/null 2>&1 || { echo "afx rsync: $c is required" >&2; return 1; }
+  done
+
+  local line; line="$(jq -c --arg h "$hash_arg" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
+  [ -n "$line" ] || { echo "afx rsync: no such session: $hash_arg" >&2; return 1; }
+  local dir src_home tool sid
+  sid="$(jq -r '.session_id' <<<"$line")"
+  dir="$(jq -r '.dir' <<<"$line")"
+  src_home="$(jq -r '.home' <<<"$line")"
+  tool="$(jq -r '.tool // "claude"' <<<"$line")"
+  [ "$tool" = claude ] || { echo "afx rsync: only Claude Code sessions are supported right now (this is $tool)" >&2; return 1; }
+  src_home="${src_home:-$HOME/.claude}"
+
+  local ssh_target="$remote_arg" dest_home="$src_home"
+  case "$remote_arg" in
+    *:*) ssh_target="${remote_arg%%:*}"; dest_home="${remote_arg#*:}" ;;
+  esac
+
+  local src_proj_dir dest_proj_dir dest_parent
+  src_proj_dir="$(_afx_proj_dir "$src_home" "$dir")"
+  [ -d "$src_proj_dir" ] || { echo "afx rsync: no project directory found: $src_proj_dir" >&2; return 1; }
+  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+  dest_parent="$(dirname "$dest_proj_dir")"
+
+  echo "afx rsync: checking afx is reachable on $ssh_target..."
+  ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1' \
+    || { echo "afx rsync: couldn't confirm afx is installed and on \$PATH on $ssh_target (or the SSH connection itself failed) -- afx rsync requires afx already set up on the destination machine" >&2; return 1; }
+
+  ssh "$ssh_target" "$(printf 'mkdir -p %q' "$dest_parent")" \
+    || { echo "afx rsync: couldn't create $dest_parent on $ssh_target" >&2; return 1; }
+
+  local n; n="$(find "$src_proj_dir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')"
+  echo "afx rsync: copying $n session(s) for $dir"
+  echo "  $src_proj_dir"
+  echo "  -> $ssh_target:$dest_proj_dir"
+  rsync -az "$src_proj_dir" "$ssh_target:$dest_parent/" || { echo "afx rsync: transfer failed" >&2; return 1; }
+
+  echo "afx rsync: registering on $ssh_target..."
+  local remote_cmd; remote_cmd="$(printf 'afx _register-remote %q %q %q %q %q' \
+    "$dest_home" "$dir" "$sid" "$tool" "rsync_from_$(hostname 2>/dev/null || echo unknown)")"
+  if ! ssh "$ssh_target" "$remote_cmd"; then
+    echo "afx rsync: transfer succeeded but remote registration failed -- the files are already at $dest_proj_dir on $ssh_target; run this by hand there:" >&2
+    echo "  $remote_cmd" >&2
+    return 1
+  fi
+
+  echo "afx rsync: done. resume on $ssh_target with:"
+  echo "  ssh -t $ssh_target 'CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid'"
+  echo "afx rsync: source left untouched at $src_proj_dir"
+  echo "afx rsync: verify it resumes over there, then delete the source yourself once you're sure:"
+  echo "  rm -rf $src_proj_dir"
+}
+
 afx_help () {
   cat <<'EOF'
 afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
@@ -2328,8 +2486,10 @@ client for artifax.dev.
   afx cp <hash> <dest-home>    copy a project's sessions to another local account
   afx mv <hash> <dest-home>    move (verified copy + delete source) a project's sessions
   afx port <hash> --to <tool>  hand a session off to the other tool (claude<->codex)
+  afx scp <hash> <user@host>[:home]    migrate a project's sessions to another machine over scp
+  afx rsync <hash> <user@host>[:home]  same, over rsync (incremental/resumable transfer)
 
-Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port.
+Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port/scp/rsync.
 Run `source afx.sh` from .bashrc/.zshrc for `afx go` to actually cd your
 shell; see the README for full details and every option.
 EOF
@@ -2352,6 +2512,9 @@ afx () {
     cp) afx_cp "$@" ;;
     mv) afx_mv "$@" ;;
     port) afx_port "$@" ;;
+    scp) afx_scp "$@" ;;
+    rsync) afx_rsync "$@" ;;
+    _register-remote) afx_register_remote "$@" ;;
     help|--help|-h|"") afx_help ;;
     *) echo "afx: unknown command: $cmd (see: afx help)" >&2; return 1 ;;
   esac
@@ -2362,11 +2525,11 @@ afx () {
 _afx_complete () {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync help" -- "$cur") )
     return 0
   fi
   case "${COMP_WORDS[1]}" in
-    star|go|rm|push|cp|mv|port)
+    star|go|rm|push|cp|mv|port|scp|rsync)
       local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
       [ -r "$f" ] || return 0
       local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
@@ -2386,11 +2549,11 @@ fi
 if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
   _afx_complete_zsh () {
     if [ "$CURRENT" -eq 2 ]; then
-      compadd star go list status rm find jobs push pull cp mv port help
+      compadd star go list status rm find jobs push pull cp mv port scp rsync help
       return
     fi
     case "${words[2]}" in
-      star|go|rm|push|cp|mv|port)
+      star|go|rm|push|cp|mv|port|scp|rsync)
         local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
         [ -r "$f" ] || return 0
         local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
