@@ -197,6 +197,30 @@ afx pull <project-id-or-hash> [session-id-prefix] [--into <dir>]
                       # already tracked locally. Only `claude_code`
                       # sessions with a resumable local session id can be
                       # pulled right now.
+afx port <hash> --to claude|codex [--dump] [--out <file>]
+                      # hand a session off to the *other* tool -- port a
+                      # Claude Code session into a fresh Codex one, or vice
+                      # versa. Not a real resume: the two tools' session
+                      # formats aren't compatible (Claude's `thinking` blocks
+                      # carry an opaque `signature`, Codex's `reasoning`
+                      # items carry `encrypted_content` -- neither survives
+                      # outside its own vendor's API), so there's no shared
+                      # state to actually continue. Instead this reads the
+                      # source transcript, renders the human-visible turns
+                      # (text, tool calls/results -- reasoning/thinking
+                      # dropped) as one markdown document, and starts the
+                      # target tool in the same directory with that as its
+                      # opening prompt -- a briefing for a fresh session, not
+                      # a continuation of the old one. `--dump` prints the
+                      # rendered handoff instead of launching anything (for
+                      # inspecting it first, or piping it elsewhere);
+                      # `--out <file>` also (or only) writes it to a file. A
+                      # transcript longer than `$AFX_PORT_MAXCHARS` (default
+                      # 100000) is trimmed from the middle, keeping the
+                      # original ask and the most recent turns intact.
+                      # Refuses when the source session is already the
+                      # target tool -- use `afx go` for that, it's a real
+                      # resume.
 ```
 
 The best way to star a session is from *inside* it:

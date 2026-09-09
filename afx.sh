@@ -2134,6 +2134,183 @@ afx_mv () {
   echo "afx mv: done. $n session(s) moved to $dest_proj_dir, source removed"
 }
 
+# --- afx port: cross-tool session handoff (Claude Code <-> Codex) ---
+#
+# Unlike afx cp/mv (same tool, different account -- a byte-for-byte copy of
+# the real transcript, still natively resumable), afx port crosses tools.
+# There is no shared session format to copy: Claude's `thinking` blocks
+# carry a `signature` and Codex's `reasoning` items carry `encrypted_content`,
+# both opaque outside their own vendor's API, so the model's actual internal
+# state never survives the jump either direction. What afx port does instead
+# is read the source transcript, render just the human-visible turns (text
+# and tool calls/results, skipping reasoning/thinking) as one markdown
+# document, and hand that to the other tool as its opening prompt -- a
+# briefing, not a real resume. The target session starts fresh (no cache,
+# no tool schema carried over) but has the prior conversation to work from.
+
+# Renders a Claude Code transcript ($1) to markdown: one heading per user/
+# assistant turn, tool calls/results inlined and labeled by tool name.
+# Sidechain (subagent) turns are skipped -- they're not part of the main
+# conversation a handoff should carry. `thinking` blocks are skipped too --
+# see the afx_port comment above for why they can't travel anyway.
+_afx_port_render_claude () {
+  jq -s -r '
+    def trunc(n): if (length > n) then (.[0:n] + "...[truncated]") else . end;
+    ( [ .[] | select(.type=="assistant") | (.message.content // [])[]?
+        | select(.type=="tool_use") | {(.id): .name} ] | add // {} ) as $tm
+    | .[]
+    | select(.isSidechain != true)
+    | select(.type=="user" or .type=="assistant")
+    | .type as $role
+    | (.message.content) as $c
+    | ( if ($c|type)=="string" then [{type:"text", text:$c}] else $c end ) as $blocks
+    | $blocks[]?
+    | if .type=="text" then
+        "### " + (if $role=="user" then "User" else "Assistant" end) + "\n\n" + (.text|trunc(4000)) + "\n"
+      elif .type=="tool_use" then
+        "**Tool call:** `" + .name + "`\n```\n" + (.input|tostring|trunc(1000)) + "\n```\n"
+      elif .type=="tool_result" then
+        ( if (.content|type)=="string" then .content
+          else ([ (.content // [])[]? | select(.type=="text") | .text ] | join("\n"))
+          end ) as $rt
+        | "**Tool result** (`" + ($tm[.tool_use_id] // "tool") + "`):\n```\n" + ($rt|trunc(1500)) + "\n```\n"
+      else empty end
+  ' "$1"
+}
+
+# Same, for a Codex rollout file ($1). Codex's own record types (verified
+# against cli_version 0.151.0 -- see the afx_find comment on how fast this
+# schema drifts): `response_item` payloads of type message/function_call/
+# function_call_output carry the actual conversation; `event_msg` entries
+# duplicate that same content for the TUI's own use and are skipped here to
+# avoid rendering everything twice. `developer`-role messages (environment/
+# permissions boilerplate, AGENTS.md injections) are skipped as noise.
+_afx_port_render_codex () {
+  jq -s -r '
+    def trunc(n): if (length > n) then (.[0:n] + "...[truncated]") else . end;
+    ( [ .[] | select(.type=="response_item") | .payload
+        | select(.type=="function_call")
+        | {(.call_id): (if .namespace then (.namespace + "." + .name) else .name end)} ] | add // {} ) as $tm
+    | .[]
+    | select(.type=="response_item")
+    | .payload as $p
+    | if $p.type=="message" and ($p.role=="user" or $p.role=="assistant") then
+        ( [ ($p.content // [])[]? | select(.type=="input_text" or .type=="output_text") | .text ] | join("\n") ) as $text
+        | if ($text|length) > 0 then
+            "### " + (if $p.role=="user" then "User" else "Assistant" end) + "\n\n" + ($text|trunc(4000)) + "\n"
+          else empty end
+      elif $p.type=="function_call" then
+        "**Tool call:** `" + (if $p.namespace then ($p.namespace + "." + $p.name) else $p.name end) + "`\n```\n" + ($p.arguments|trunc(1000)) + "\n```\n"
+      elif $p.type=="function_call_output" then
+        "**Tool result** (`" + ($tm[$p.call_id] // "tool") + "`):\n```\n" + (($p.output // "")|trunc(1500)) + "\n```\n"
+      elif $p.type=="reasoning" and (($p.summary // []) | length) > 0 then
+        "_reasoning: " + (($p.summary | map(.text // (.|tostring)) | join(" ")) | trunc(500)) + "_\n"
+      else empty end
+  ' "$1"
+}
+
+_afx_port_render () {
+  if [ "$1" = codex ]; then
+    _afx_port_render_codex "$2"
+  else
+    _afx_port_render_claude "$2"
+  fi
+}
+
+afx_port () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_arg="" to="" dump=0 out_file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --to) to="${2:-}"; shift 2 ;;
+      --dump) dump=1; shift ;;
+      --out) out_file="${2:-}"; shift 2 ;;
+      -*) echo "afx port: unknown option: $1" >&2; return 1 ;;
+      *) if [ -z "$hash_arg" ]; then hash_arg="$1"; shift; else echo "afx port: unexpected argument: $1" >&2; return 1; fi ;;
+    esac
+  done
+  case "$to" in
+    claude|codex) ;;
+    "") echo "usage: afx port <hash> --to claude|codex [--dump] [--out <file>]" >&2; return 1 ;;
+    *) echo "afx port: --to must be claude or codex (this is $to)" >&2; return 1 ;;
+  esac
+  [ -n "$hash_arg" ] || { echo "usage: afx port <hash> --to claude|codex [--dump] [--out <file>]" >&2; return 1; }
+  [ -s "$SESSIONS_FILE" ] || { echo "afx port: no sessions yet" >&2; return 1; }
+
+  local line; line="$(jq -c --arg h "$hash_arg" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
+  [ -n "$line" ] || { echo "afx port: no such session: $hash_arg" >&2; return 1; }
+  local dir sid home tool
+  dir="$(jq -r '.dir' <<<"$line")"
+  sid="$(jq -r '.session_id' <<<"$line")"
+  home="$(jq -r '.home' <<<"$line")"
+  tool="$(jq -r '.tool // "claude"' <<<"$line")"
+
+  case "$tool" in
+    claude|codex) ;;
+    *) echo "afx port: source tool '$tool' isn't supported yet (only claude/codex transcripts can be read)" >&2; return 1 ;;
+  esac
+  [ "$tool" != "$to" ] || { echo "afx port: session $hash_arg is already a $tool session -- use \`afx go $hash_arg\` to resume it natively" >&2; return 1; }
+
+  local file
+  if [ "$tool" = codex ]; then
+    home="${home:-$HOME/.codex}"
+    file="$(find "$home/sessions" -name "*$sid.jsonl" -print -quit 2>/dev/null)"
+  else
+    home="${home:-$HOME/.claude}"
+    file="$(_afx_proj_dir "$home" "$dir")/$sid.jsonl"
+  fi
+  [ -n "$file" ] && [ -f "$file" ] || { echo "afx port: transcript file not found for $hash_arg (looked in $home)" >&2; return 1; }
+
+  local transcript
+  transcript="$(_afx_port_render "$tool" "$file")" || { echo "afx port: failed to parse transcript" >&2; return 1; }
+  [ -n "$transcript" ] || { echo "afx port: transcript came out empty -- nothing to hand off" >&2; return 1; }
+
+  # Keeps both ends of a long transcript (the original ask, and the most
+  # recent turns) rather than truncating from the tail only -- the part
+  # most worth losing on a long session is the noisy middle.
+  local maxchars="${AFX_PORT_MAXCHARS:-100000}"
+  if [ "${#transcript}" -gt "$maxchars" ]; then
+    local elided=$(( ${#transcript} - maxchars )) keep_head=$((maxchars / 4)) keep_tail=$((maxchars * 3 / 4))
+    transcript="${transcript:0:$keep_head}
+
+...[afx port: $elided characters elided from the middle of this transcript -- it ran long; override with \$AFX_PORT_MAXCHARS]...
+
+${transcript: -$keep_tail}"
+  fi
+
+  local payload
+  payload="$(cat <<EOF
+This is a handoff from a $tool coding-agent session, produced by \`afx port\`
+-- not a true resume (the two tools' internal reasoning/session state
+isn't portable across each other), just the visible conversation so far.
+Use it as background context and continue the work described below.
+
+---
+
+$transcript
+EOF
+)"
+
+  if [ -n "$out_file" ]; then
+    printf '%s\n' "$payload" > "$out_file" || return 1
+    echo "afx port: wrote handoff to $out_file" >&2
+  fi
+
+  if [ "$dump" = 1 ]; then
+    printf '%s\n' "$payload"
+    return 0
+  fi
+
+  [ -d "$dir" ] || { echo "afx port: directory gone: $dir" >&2; return 1; }
+  cd "$dir" || return 1
+  echo "afx port: handing off ${sid:0:8} ($tool) to $to in $dir" >&2
+  if [ "$to" = codex ]; then
+    codex "$payload"
+  else
+    claude "$payload"
+  fi
+}
+
 afx_help () {
   cat <<'EOF'
 afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
@@ -2150,8 +2327,9 @@ client for artifax.dev.
   afx pull <project-id-or-hash> [opts]  pull a session back down from artifax.dev
   afx cp <hash> <dest-home>    copy a project's sessions to another local account
   afx mv <hash> <dest-home>    move (verified copy + delete source) a project's sessions
+  afx port <hash> --to <tool>  hand a session off to the other tool (claude<->codex)
 
-Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv.
+Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port.
 Run `source afx.sh` from .bashrc/.zshrc for `afx go` to actually cd your
 shell; see the README for full details and every option.
 EOF
@@ -2173,6 +2351,7 @@ afx () {
     pull) afx_pull "$@" ;;
     cp) afx_cp "$@" ;;
     mv) afx_mv "$@" ;;
+    port) afx_port "$@" ;;
     help|--help|-h|"") afx_help ;;
     *) echo "afx: unknown command: $cmd (see: afx help)" >&2; return 1 ;;
   esac
@@ -2183,11 +2362,11 @@ afx () {
 _afx_complete () {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port help" -- "$cur") )
     return 0
   fi
   case "${COMP_WORDS[1]}" in
-    star|go|rm|push|cp|mv)
+    star|go|rm|push|cp|mv|port)
       local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
       [ -r "$f" ] || return 0
       local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
@@ -2207,11 +2386,11 @@ fi
 if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
   _afx_complete_zsh () {
     if [ "$CURRENT" -eq 2 ]; then
-      compadd star go list status rm find jobs push pull cp mv help
+      compadd star go list status rm find jobs push pull cp mv port help
       return
     fi
     case "${words[2]}" in
-      star|go|rm|push|cp|mv)
+      star|go|rm|push|cp|mv|port)
         local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
         [ -r "$f" ] || return 0
         local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
