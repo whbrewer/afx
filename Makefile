@@ -33,6 +33,17 @@ install:
 	@echo 'before the `source` line above:'
 	@echo ''
 	@echo '  autoload -Uz compinit && compinit'
+	@echo ''
+	@echo '----------------------------------------------------------------'
+	@echo 'NOTE: this only installs the CLI -- `afx star`/`go`/`rm` work now,'
+	@echo 'but `afx list` stays empty until you also install a hook. Run the'
+	@echo 'installer for whichever coding agent(s) you use:'
+	@echo ''
+	@echo '  make install-claude-hook   # Claude Code'
+	@echo '  make install-codex-hook    # Codex'
+	@echo '  make install-gemini-hook   # Gemini CLI'
+	@echo '  make install-hooks         # all three'
+	@echo '----------------------------------------------------------------'
 
 uninstall:
 	rm -f $(BINDIR)/afx.sh $(BINDIR)/afx $(BINDIR)/afx-aliases.sh
@@ -41,7 +52,7 @@ uninstall:
 # hooks in every ~/.claude* settings.json (backs each up to
 # settings.json.bak first). Browse the journal with `afx list`, background
 # jobs with `afx jobs`.
-install-hook:
+install-claude-hook:
 	install -m 755 hooks/afx-claude-sessionend $(BINDIR)/afx-claude-sessionend
 	install -m 755 hooks/afx-claude-summarize-async $(BINDIR)/afx-claude-summarize-async
 	install -m 755 hooks/afx-claude-userpromptsubmit $(BINDIR)/afx-claude-userpromptsubmit
@@ -56,7 +67,7 @@ install-hook:
 	    $$s.bak > $$s.new && mv $$s.new $$s && echo "hooks registered in $$s"; \
 	done
 
-uninstall-hook:
+uninstall-claude-hook:
 	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
 	  s=$$d/settings.json; [ -f $$s ] || continue; \
 	  cp $$s $$s.bak; \
@@ -124,4 +135,10 @@ uninstall-gemini-hook:
 	  $$s.bak > $$s.new && mv $$s.new $$s && echo "gemini hooks removed from $$s"
 	rm -f $(BINDIR)/afx-gemini-sessionend $(BINDIR)/afx-gemini-summarize-async $(BINDIR)/afx-gemini-beforeagent
 
-.PHONY: install uninstall install-hook uninstall-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook test
+# Convenience wrappers for anyone running more than one coding agent --
+# register (or remove) all three tools' hooks in one shot.
+install-hooks: install-claude-hook install-codex-hook install-gemini-hook
+
+uninstall-hooks: uninstall-claude-hook uninstall-codex-hook uninstall-gemini-hook
+
+.PHONY: install uninstall install-claude-hook uninstall-claude-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook install-hooks uninstall-hooks test
