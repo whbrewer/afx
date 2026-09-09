@@ -259,6 +259,25 @@ _afx_is_codex () {
   head -c 200 "$1" 2>/dev/null | grep -q '"type":"session_meta"'
 }
 
+# Resolves a sessions.jsonl row's (tool, home, dir, sid) to the real
+# transcript file on disk, defaulting an unset `home` the same way afx_go
+# does. Used by anything that needs to read a transcript's actual content
+# (afx_port, afx_export) rather than just resume it. Echoes
+# "<resolved-home>\x1f<file-path>" on one line -- $home can't just be
+# returned via exit status/stdout alone since callers need the defaulted
+# value too (for the "not found" error message).
+_afx_locate_transcript () {
+  local tool="$1" home="$2" dir="$3" sid="$4" file
+  if [ "$tool" = codex ]; then
+    home="${home:-$HOME/.codex}"
+    file="$(find "$home/sessions" -name "*$sid.jsonl" -print -quit 2>/dev/null)"
+  else
+    home="${home:-$HOME/.claude}"
+    file="$(_afx_proj_dir "$home" "$dir")/$sid.jsonl"
+  fi
+  printf '%s\x1f%s\n' "$home" "$file"
+}
+
 _afx_hash_len () {
   # Shortest hash length (>=6) that's unique across every session id read
   # from stdin (one per line, blanks ignored). Codex's session ids are
@@ -354,6 +373,14 @@ _afx_truncate () {
   else
     printf '%s' "$s"
   fi
+}
+
+# Renders $1 as a double-quoted YAML flow scalar (used by afx_export's OKF
+# frontmatter). A JSON string is already valid YAML double-quoted syntax --
+# same backslash/quote/control-char escaping -- so jq's own string encoder
+# does the job without a YAML library.
+_afx_yaml_str () {
+  jq -Rn --arg s "$1" '$s'
 }
 
 _afx_date_fmt () {
@@ -2251,14 +2278,9 @@ afx_port () {
   esac
   [ "$tool" != "$to" ] || { echo "afx port: session $hash_arg is already a $tool session -- use \`afx go $hash_arg\` to resume it natively" >&2; return 1; }
 
-  local file
-  if [ "$tool" = codex ]; then
-    home="${home:-$HOME/.codex}"
-    file="$(find "$home/sessions" -name "*$sid.jsonl" -print -quit 2>/dev/null)"
-  else
-    home="${home:-$HOME/.claude}"
-    file="$(_afx_proj_dir "$home" "$dir")/$sid.jsonl"
-  fi
+  local resolved file
+  resolved="$(_afx_locate_transcript "$tool" "$home" "$dir" "$sid")"
+  IFS=$'\x1f' read -r home file <<<"$resolved"
   [ -n "$file" ] && [ -f "$file" ] || { echo "afx port: transcript file not found for $hash_arg (looked in $home)" >&2; return 1; }
 
   local transcript
@@ -2309,6 +2331,156 @@ EOF
   else
     claude "$payload"
   fi
+}
+
+# --- afx export: write a session out as an Open Knowledge Format bundle ---
+#
+# OKF (https://github.com/GoogleCloudPlatform/open-knowledge-format, v0.2)
+# is a directory of markdown-plus-YAML-frontmatter "concept" documents --
+# built for data catalogs, not for resuming a conversation, which is why
+# this is a separate verb from afx_port rather than another `--to` value:
+# there's no tool to launch, and the output is a directory tree (a concept
+# doc per session plus a root index.md), not one string. It reuses the same
+# _afx_locate_transcript/_afx_port_render pipeline afx_port does -- only
+# the last step (wrap the rendered turns in an OKF concept doc instead of a
+# handoff prompt) differs.
+#
+# Every export upserts $out_dir/sessions/<sid>.md (safe to re-run after a
+# session grows -- same sid, same file, latest content) and regenerates
+# $out_dir/index.md from a small bookkeeping sidecar,
+# $out_dir/.afx/sessions.json (not a concept doc itself -- OKF only reserves
+# index.md/log.md, so a non-.md file is invisible to any OKF consumer),
+# rather than trying to parse OKF frontmatter back out of every existing
+# concept doc on each run. A per-directory log.md (OKF section 9) is a
+# natural follow-up once there's a real need for it; skipped for now to
+# avoid maintaining text-surgery code with no consumer yet.
+afx_export () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
+  local hash_arg="" format="" out_dir=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --format) format="${2:-}"; shift 2 ;;
+      --out) out_dir="${2:-}"; shift 2 ;;
+      -*) echo "afx export: unknown option: $1" >&2; return 1 ;;
+      *) if [ -z "$hash_arg" ]; then hash_arg="$1"; shift; else echo "afx export: unexpected argument: $1" >&2; return 1; fi ;;
+    esac
+  done
+  case "$format" in
+    okf) ;;
+    "") echo "usage: afx export <hash> --format okf --out <bundle-dir>" >&2; return 1 ;;
+    *) echo "afx export: --format must be okf (this is $format) -- that's the only format supported right now" >&2; return 1 ;;
+  esac
+  [ -n "$hash_arg" ] || { echo "usage: afx export <hash> --format okf --out <bundle-dir>" >&2; return 1; }
+  [ -n "$out_dir" ] || { echo "usage: afx export <hash> --format okf --out <bundle-dir>" >&2; return 1; }
+  [ -s "$SESSIONS_FILE" ] || { echo "afx export: no sessions yet" >&2; return 1; }
+
+  local line; line="$(jq -c --arg h "$hash_arg" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
+  [ -n "$line" ] || { echo "afx export: no such session: $hash_arg" >&2; return 1; }
+  local dir sid home tool
+  dir="$(jq -r '.dir' <<<"$line")"
+  sid="$(jq -r '.session_id' <<<"$line")"
+  home="$(jq -r '.home' <<<"$line")"
+  tool="$(jq -r '.tool // "claude"' <<<"$line")"
+  case "$tool" in
+    claude|codex) ;;
+    *) echo "afx export: source tool '$tool' isn't supported yet (only claude/codex transcripts can be read)" >&2; return 1 ;;
+  esac
+
+  local resolved file
+  resolved="$(_afx_locate_transcript "$tool" "$home" "$dir" "$sid")"
+  IFS=$'\x1f' read -r home file <<<"$resolved"
+  [ -n "$file" ] && [ -f "$file" ] || { echo "afx export: transcript file not found for $hash_arg (looked in $home)" >&2; return 1; }
+
+  local transcript
+  transcript="$(_afx_port_render "$tool" "$file")" || { echo "afx export: failed to parse transcript" >&2; return 1; }
+  [ -n "$transcript" ] || { echo "afx export: transcript came out empty -- nothing to export" >&2; return 1; }
+
+  # title/description prefer a human's own words (afx star's note, or the
+  # LLM-written summary/detail from the SessionEnd hook) over anything
+  # this command would have to invent itself.
+  local note summary detail
+  note="$(jq -r '.note // empty' <<<"$line")"
+  summary="$(jq -r '.summary // empty' <<<"$line")"
+  detail="$(jq -r '.detail // empty' <<<"$line")"
+  local title="${note:-$summary}"
+  [ -n "$title" ] || title="$(_afx_first_msg "$file")"
+  [ -n "$title" ] || title="$tool session ${sid:0:8}"
+  local desc="${detail:-$summary}"
+  [ -n "$desc" ] || desc="Exported $tool coding-agent session from $dir"
+
+  # generated.by uses OKF's <producer>/<version> actor convention (section
+  # 7) -- the coding-agent tool and its own version, since that's what
+  # actually produced the conversation this concept doc transcribes.
+  local version gen_by gen_at
+  if [ "$tool" = codex ]; then
+    version="$(head -1 "$file" | jq -r '.payload.cli_version // empty' 2>/dev/null)"
+    gen_by="codex/${version:-unknown}"
+  else
+    version="$(jq -r 'select(.version != null) | .version' "$file" 2>/dev/null | head -1)"
+    gen_by="claude-code/${version:-unknown}"
+  fi
+  gen_at="$(jq -r 'select(.timestamp != null) | .timestamp' "$file" 2>/dev/null | tail -1)"
+  [ -n "$gen_at" ] || gen_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  mkdir -p "$out_dir/sessions" "$out_dir/.afx" || { echo "afx export: couldn't create $out_dir" >&2; return 1; }
+
+  # resource/sources both point at the real transcript file via a file://
+  # URI -- honest provenance (this is what the doc was generated from), but
+  # it's only resolvable on this machine, unlike OKF's own external-URL
+  # examples. afx_* prefixed keys are extension fields (section 4.1
+  # explicitly allows producer-defined keys); consumers that don't
+  # recognize them are required to ignore them, not reject the doc.
+  local resource_uri="file://$file"
+  local doc_path="$out_dir/sessions/$sid.md"
+  {
+    echo "---"
+    echo "type: Coding Agent Session"
+    echo "title: $(_afx_yaml_str "$title")"
+    echo "description: $(_afx_yaml_str "$desc")"
+    echo "resource: $(_afx_yaml_str "$resource_uri")"
+    printf 'tags: [session, %s]\n' "$tool"
+    printf 'generated: { by: %s, at: %s }\n' "$(_afx_yaml_str "$gen_by")" "$(_afx_yaml_str "$gen_at")"
+    echo "sources:"
+    echo "  - id: transcript"
+    echo "    resource: $(_afx_yaml_str "$resource_uri")"
+    echo "    title: $(_afx_yaml_str "$tool session transcript")"
+    printf 'afx_session_id: %s\n' "$(_afx_yaml_str "$sid")"
+    printf 'afx_tool: %s\n' "$(_afx_yaml_str "$tool")"
+    printf 'afx_dir: %s\n' "$(_afx_yaml_str "$dir")"
+    echo "---"
+    echo
+    echo "# Transcript"
+    echo
+    printf '%s\n' "$transcript"
+  } > "$doc_path"
+
+  # index.md (section 8) is regenerated from this sidecar on every export
+  # rather than parsed back out of existing concept docs' YAML frontmatter
+  # -- simpler and idempotent, and the sidecar isn't itself a concept doc
+  # (see the afx_export comment above).
+  local sidecar="$out_dir/.afx/sessions.json"
+  [ -f "$sidecar" ] || echo '{}' > "$sidecar"
+  jq --arg sid "$sid" --arg title "$title" --arg desc "$desc" --arg tool "$tool" --arg at "$gen_at" --arg path "sessions/$sid.md" \
+    '.[$sid] = {title:$title, description:$desc, tool:$tool, generated_at:$at, path:$path}' \
+    "$sidecar" > "$sidecar.tmp" && mv "$sidecar.tmp" "$sidecar"
+
+  {
+    echo "---"
+    echo 'okf_version: "0.2"'
+    echo "---"
+    echo
+    echo "# Sessions"
+    echo
+    jq -r '
+      to_entries
+      | sort_by(.value.generated_at) | reverse
+      | .[]
+      | "* [" + .value.title + "](" + .value.path + ") - " + .value.description
+    ' "$sidecar"
+  } > "$out_dir/index.md"
+
+  echo "afx export: wrote $doc_path"
+  echo "afx export: updated $out_dir/index.md"
 }
 
 # --- afx scp / afx rsync: migrate a project's Claude Code sessions to another --
@@ -2488,8 +2660,9 @@ client for artifax.dev.
   afx port <hash> --to <tool>  hand a session off to the other tool (claude<->codex)
   afx scp <hash> <user@host>[:home]    migrate a project's sessions to another machine over scp
   afx rsync <hash> <user@host>[:home]  same, over rsync (incremental/resumable transfer)
+  afx export <hash> --format okf --out <dir>  write a session to an Open Knowledge Format bundle
 
-Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port/scp/rsync.
+Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port/scp/rsync/export.
 Run `source afx.sh` from .bashrc/.zshrc for `afx go` to actually cd your
 shell; see the README for full details and every option.
 EOF
@@ -2514,6 +2687,7 @@ afx () {
     port) afx_port "$@" ;;
     scp) afx_scp "$@" ;;
     rsync) afx_rsync "$@" ;;
+    export) afx_export "$@" ;;
     _register-remote) afx_register_remote "$@" ;;
     help|--help|-h|"") afx_help ;;
     *) echo "afx: unknown command: $cmd (see: afx help)" >&2; return 1 ;;
@@ -2525,11 +2699,11 @@ afx () {
 _afx_complete () {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync export help" -- "$cur") )
     return 0
   fi
   case "${COMP_WORDS[1]}" in
-    star|go|rm|push|cp|mv|port|scp|rsync)
+    star|go|rm|push|cp|mv|port|scp|rsync|export)
       local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
       [ -r "$f" ] || return 0
       local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
@@ -2549,11 +2723,11 @@ fi
 if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
   _afx_complete_zsh () {
     if [ "$CURRENT" -eq 2 ]; then
-      compadd star go list status rm find jobs push pull cp mv port scp rsync help
+      compadd star go list status rm find jobs push pull cp mv port scp rsync export help
       return
     fi
     case "${words[2]}" in
-      star|go|rm|push|cp|mv|port|scp|rsync)
+      star|go|rm|push|cp|mv|port|scp|rsync|export)
         local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
         [ -r "$f" ] || return 0
         local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
