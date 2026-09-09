@@ -8,7 +8,7 @@ setup() {
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME/.afx"
   export AFX_SESSIONS="$HOME/.afx/sessions.jsonl"
-  unset CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR AFX_CONFIG_DIRS AFX_CODEX_HOMES CODEX_HOME AFX_PALETTE AFX_HASH_COLOR
+  unset CLAUDE_CODE_SESSION_ID CLAUDE_CONFIG_DIR AFX_CONFIG_DIRS AFX_CODEX_HOMES CODEX_HOME AFX_PALETTE AFX_HASH_COLOR AFX_OKF_DIR
   export NO_COLOR=1
   source "$BATS_TEST_DIRNAME/../afx.sh"
 }
@@ -54,16 +54,44 @@ _write_codex_transcript() {
 
 # ==================== usage / guard-rail errors ====================
 
-@test "afx_export: usage error without --format" {
-  run afx_export abc123 --out "$BATS_TEST_TMPDIR/bundle"
+@test "afx_export: usage error without a hash argument at all" {
+  run afx_export --format okf --out "$BATS_TEST_TMPDIR/bundle"
   [ "$status" -eq 1 ]
   [[ "$output" == *"usage: afx export"* ]]
 }
 
-@test "afx_export: usage error without --out" {
-  run afx_export abc123 --format okf
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"usage: afx export"* ]]
+@test "afx_export: --format defaults to okf when omitted" {
+  local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
+  mkdir -p "$dir"
+  _write_claude_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "my note" "a short summary"
+
+  run afx_export abc123 --out "$BATS_TEST_TMPDIR/bundle"
+  [ "$status" -eq 0 ]
+  [ -f "$BATS_TEST_TMPDIR/bundle/sessions/$sid.md" ]
+}
+
+@test "afx_export: --out defaults to \$AFX_OKF_DIR when set" {
+  local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
+  mkdir -p "$dir"
+  _write_claude_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "my note" "a short summary"
+
+  export AFX_OKF_DIR="$BATS_TEST_TMPDIR/custom-okf-dir"
+  run afx_export abc123
+  [ "$status" -eq 0 ]
+  [ -f "$AFX_OKF_DIR/sessions/$sid.md" ]
+}
+
+@test "afx_export: --out defaults to ~/.afx/okf with neither \$AFX_OKF_DIR nor --out given" {
+  local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
+  mkdir -p "$dir"
+  _write_claude_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "my note" "a short summary"
+
+  run afx_export abc123
+  [ "$status" -eq 0 ]
+  [ -f "$HOME/.afx/okf/sessions/$sid.md" ]
 }
 
 @test "afx_export: rejects a format other than okf" {

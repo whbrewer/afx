@@ -2354,6 +2354,11 @@ EOF
 # concept doc on each run. A per-directory log.md (OKF section 9) is a
 # natural follow-up once there's a real need for it; skipped for now to
 # avoid maintaining text-surgery code with no consumer yet.
+#
+# `--format`/`--out` are both optional: `okf` is the only format today, so
+# it's the default; `--out` defaults to $AFX_OKF_DIR or ~/.afx/okf, one
+# bundle everything lands in unless a call opts into somewhere else -- the
+# same $AFX_*-overridable-default pattern as $AFX_SESSIONS/$AFX_JOBS.
 afx_export () {
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local hash_arg="" format="" out_dir=""
@@ -2365,13 +2370,12 @@ afx_export () {
       *) if [ -z "$hash_arg" ]; then hash_arg="$1"; shift; else echo "afx export: unexpected argument: $1" >&2; return 1; fi ;;
     esac
   done
+  [ -n "$format" ] || format=okf
   case "$format" in
-    okf) ;;
-    "") echo "usage: afx export <hash> --format okf --out <bundle-dir>" >&2; return 1 ;;
+    okf) [ -n "$out_dir" ] || out_dir="${AFX_OKF_DIR:-$HOME/.afx/okf}" ;;
     *) echo "afx export: --format must be okf (this is $format) -- that's the only format supported right now" >&2; return 1 ;;
   esac
-  [ -n "$hash_arg" ] || { echo "usage: afx export <hash> --format okf --out <bundle-dir>" >&2; return 1; }
-  [ -n "$out_dir" ] || { echo "usage: afx export <hash> --format okf --out <bundle-dir>" >&2; return 1; }
+  [ -n "$hash_arg" ] || { echo "usage: afx export <hash> [--format okf] [--out <bundle-dir>]  (default --out: \$AFX_OKF_DIR or ~/.afx/okf)" >&2; return 1; }
   [ -s "$SESSIONS_FILE" ] || { echo "afx export: no sessions yet" >&2; return 1; }
 
   local line; line="$(jq -c --arg h "$hash_arg" 'select(.session_id | startswith($h))' "$SESSIONS_FILE" | tail -1)"
@@ -2660,7 +2664,7 @@ client for artifax.dev.
   afx port <hash> --to <tool>  hand a session off to the other tool (claude<->codex)
   afx scp <hash> <user@host>[:home]    migrate a project's sessions to another machine over scp
   afx rsync <hash> <user@host>[:home]  same, over rsync (incremental/resumable transfer)
-  afx export <hash> --format okf --out <dir>  write a session to an Open Knowledge Format bundle
+  afx export <hash> [--format okf] [--out <dir>]  write a session to an Open Knowledge Format bundle (default --out: ~/.afx/okf)
 
 Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port/scp/rsync/export.
 Run `source afx.sh` from .bashrc/.zshrc for `afx go` to actually cd your

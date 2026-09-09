@@ -230,7 +230,7 @@ afx port <hash> --to claude|codex [--dump] [--out <file>]
                       # Refuses when the source session is already the
                       # target tool -- use `afx go` for that, it's a real
                       # resume.
-afx export <hash> --format okf --out <bundle-dir>
+afx export <hash> [--format okf] [--out <bundle-dir>]
                       # write a session out as an Open Knowledge Format (OKF
                       # v0.2, https://github.com/GoogleCloudPlatform/open-knowledge-format)
                       # bundle -- a directory of markdown-plus-YAML-frontmatter
@@ -238,10 +238,15 @@ afx export <hash> --format okf --out <bundle-dir>
                       # knowledge-management tools (Obsidian, MkDocs), not for
                       # resuming a conversation. A separate verb from `afx port`
                       # for exactly that reason: there's no tool to launch, and
-                      # the output is a directory tree, not one string. Shares
-                      # the same transcript rendering `afx port` uses, wrapped
-                      # in a concept doc (`type: Coding Agent Session`, a
-                      # `generated`/`sources` provenance block, and the
+                      # the output is a directory tree, not one string. Both
+                      # flags are optional: `okf` is the only `--format` today
+                      # so it's the default, and `--out` defaults to
+                      # `$AFX_OKF_DIR` or `~/.afx/okf` -- one bundle everything
+                      # lands in unless a call opts into somewhere else, the
+                      # same pattern `$AFX_SESSIONS`/`$AFX_JOBS` already use.
+                      # Shares the same transcript rendering `afx port` uses,
+                      # wrapped in a concept doc (`type: Coding Agent Session`,
+                      # a `generated`/`sources` provenance block, and the
                       # rendered conversation as the body) written to
                       # `<bundle-dir>/sessions/<sid>.md`. Safe to re-run --
                       # re-exporting the same session overwrites its doc in
