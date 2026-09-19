@@ -137,14 +137,20 @@ _write_transcript() {
   _write_transcript "$sid" "$dir" "$home"
   _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
   local dest_home="$REMOTE_HOME/.claude"
+  # ssh-stub runs the remote side with HOME=$REMOTE_HOME, a different $HOME
+  # than this process's -- so afx_scp's home-prefix remap should kick in and
+  # register the project under $REMOTE_HOME, not under this machine's $dir.
+  local dest_dir="$REMOTE_HOME${dir#$HOME}"
 
   run afx_scp abc123 "testhost:$dest_home"
   [ "$status" -eq 0 ]
+  [[ "$output" == *"remapping project dir: $dir -> $dest_dir"* ]]
+  [[ "$output" == *"cd $dest_dir && CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid"* ]]
   [[ "$output" == *"done. resume on testhost with:"* ]]
   [[ "$output" == *"source left untouched at"* ]]
 
   local src_proj_dir; src_proj_dir="$(_afx_proj_dir "$home" "$dir")"
-  local dest_proj_dir; dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+  local dest_proj_dir; dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dest_dir")"
 
   # the transcript and the memory file both traveled in the raw directory copy
   [ -f "$dest_proj_dir/$sid.jsonl" ]
@@ -152,21 +158,63 @@ _write_transcript() {
   # the source is completely untouched
   [ -f "$src_proj_dir/$sid.jsonl" ]
 
-  # registered on the "remote" side: a .claude.json project entry...
-  run jq -r --arg d "$dir" '.projects[$d] // empty' "$dest_home/.claude.json"
+  # registered on the "remote" side: a .claude.json project entry, keyed by
+  # the remapped dir (the source's literal $dir wouldn't exist over there)...
+  run jq -r --arg d "$dest_dir" '.projects[$d] // empty' "$dest_home/.claude.json"
   [ -n "$output" ]
 
   # ...and an afx-go-able sessions.jsonl row, scoped to the remote's own bookkeeping
   run jq -r --arg s "$sid" 'select(.session_id==$s) | .home' "$REMOTE_HOME/.afx/sessions.jsonl"
   [ "$output" = "$dest_home" ]
+  run jq -r --arg s "$sid" 'select(.session_id==$s) | .dir' "$REMOTE_HOME/.afx/sessions.jsonl"
+  [ "$output" = "$dest_dir" ]
   run jq -r --arg s "$sid" 'select(.session_id==$s) | .reason' "$REMOTE_HOME/.afx/sessions.jsonl"
   [[ "$output" == scp_from_* ]]
 
   # the LOCAL sessions.jsonl row is never repointed -- unlike afx_cp/afx_mv,
   # this machine still owns the only resumable copy of $sid until the user
-  # deletes it themselves
+  # deletes it themselves, still under its own (unremapped) $dir
   run jq -r --arg s "$sid" 'select(.session_id==$s) | .home' "$AFX_SESSIONS"
   [ "$output" = "$home" ]
+  run jq -r --arg s "$sid" 'select(.session_id==$s) | .dir' "$AFX_SESSIONS"
+  [ "$output" = "$dir" ]
+}
+
+@test "afx_scp: same \$HOME on both sides leaves dir unremapped" {
+  local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
+  _write_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
+  local dest_home="$REMOTE_HOME/.claude"
+  # override setup()'s default so ssh-stub's simulated remote reports the
+  # SAME $HOME as this process -- the common case (e.g. same username on
+  # both machines) where no remap should happen.
+  export AFX_TEST_REMOTE_HOME="$HOME"
+
+  run afx_scp abc123 "testhost:$dest_home"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"remapping project dir"* ]]
+
+  local dest_proj_dir; dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+  [ -f "$dest_proj_dir/$sid.jsonl" ]
+  run jq -r --arg d "$dir" '.projects[$d] // empty' "$dest_home/.claude.json"
+  [ -n "$output" ]
+}
+
+@test "afx_scp: a dir outside \$HOME is never remapped even when remote \$HOME differs" {
+  local dir="$BATS_TEST_TMPDIR/outside/proj" home="$HOME/.claude" sid="abc123def456"
+  mkdir -p "$dir"
+  _write_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
+  local dest_home="$REMOTE_HOME/.claude"
+
+  run afx_scp abc123 "testhost:$dest_home"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"remapping project dir"* ]]
+
+  local dest_proj_dir; dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+  [ -f "$dest_proj_dir/$sid.jsonl" ]
+  run jq -r --arg d "$dir" '.projects[$d] // empty' "$dest_home/.claude.json"
+  [ -n "$output" ]
 }
 
 @test "afx_rsync: same, over the rsync path" {
@@ -174,12 +222,13 @@ _write_transcript() {
   _write_transcript "$sid" "$dir" "$home"
   _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
   local dest_home="$REMOTE_HOME/.claude"
+  local dest_dir="$REMOTE_HOME${dir#$HOME}"
 
   run afx_rsync abc123 "testhost:$dest_home"
   [ "$status" -eq 0 ]
   [[ "$output" == *"done. resume on testhost with:"* ]]
 
-  local dest_proj_dir; dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
+  local dest_proj_dir; dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dest_dir")"
   [ -f "$dest_proj_dir/$sid.jsonl" ]
 
   run jq -r --arg s "$sid" 'select(.session_id==$s) | .reason' "$REMOTE_HOME/.afx/sessions.jsonl"

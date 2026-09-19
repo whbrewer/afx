@@ -2550,15 +2550,30 @@ afx_scp () {
     *:*) ssh_target="${remote_arg%%:*}"; dest_home="${remote_arg#*:}" ;;
   esac
 
-  local src_proj_dir dest_proj_dir dest_parent
+  local src_proj_dir
   src_proj_dir="$(_afx_proj_dir "$src_home" "$dir")"
   [ -d "$src_proj_dir" ] || { echo "afx scp: no project directory found: $src_proj_dir" >&2; return 1; }
-  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
-  dest_parent="$(dirname "$dest_proj_dir")"
 
   echo "afx scp: checking afx is reachable on $ssh_target..."
-  ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1' \
+  local remote_home
+  remote_home="$(ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1 && printf %s "$HOME"')" \
     || { echo "afx scp: couldn't confirm afx is installed and on \$PATH on $ssh_target (or the SSH connection itself failed) -- afx scp requires afx already set up on the destination machine" >&2; return 1; }
+
+  # dir is the source machine's absolute project path (e.g. /Users/w1b/Projects/x);
+  # registering that same string on a box whose $HOME differs (macOS /Users vs
+  # Linux /home) would point Claude Code at a directory that doesn't exist over
+  # there, so remap dir's home-dir prefix to the destination's $HOME when they differ.
+  local dest_dir="$dir"
+  if [ -n "$remote_home" ] && [ "$remote_home" != "$HOME" ]; then
+    case "$dir" in
+      "$HOME"/*) dest_dir="$remote_home${dir#"$HOME"}" ;;
+    esac
+  fi
+  [ "$dest_dir" = "$dir" ] || echo "afx scp: remote \$HOME is $remote_home (local is $HOME) -- remapping project dir: $dir -> $dest_dir"
+
+  local dest_proj_dir dest_parent
+  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dest_dir")"
+  dest_parent="$(dirname "$dest_proj_dir")"
 
   ssh "$ssh_target" "$(printf 'mkdir -p %q' "$dest_parent")" \
     || { echo "afx scp: couldn't create $dest_parent on $ssh_target" >&2; return 1; }
@@ -2567,11 +2582,14 @@ afx_scp () {
   echo "afx scp: copying $n session(s) for $dir"
   echo "  $src_proj_dir"
   echo "  -> $ssh_target:$dest_proj_dir"
-  scp -pr "$src_proj_dir" "$ssh_target:$dest_parent/" || { echo "afx scp: transfer failed" >&2; return 1; }
+  # target dest_proj_dir itself (not "into" dest_parent/) -- when dest_dir's
+  # remapped basename differs from src_proj_dir's, copying "into" a directory
+  # would keep the source's basename instead of renaming to match dest_dir.
+  scp -pr "$src_proj_dir" "$ssh_target:$dest_proj_dir" || { echo "afx scp: transfer failed" >&2; return 1; }
 
   echo "afx scp: registering on $ssh_target..."
   local remote_cmd; remote_cmd="$(printf 'afx _register-remote %q %q %q %q %q' \
-    "$dest_home" "$dir" "$sid" "$tool" "scp_from_$(hostname 2>/dev/null || echo unknown)")"
+    "$dest_home" "$dest_dir" "$sid" "$tool" "scp_from_$(hostname 2>/dev/null || echo unknown)")"
   if ! ssh "$ssh_target" "$remote_cmd"; then
     echo "afx scp: transfer succeeded but remote registration failed -- the files are already at $dest_proj_dir on $ssh_target; run this by hand there:" >&2
     echo "  $remote_cmd" >&2
@@ -2579,7 +2597,7 @@ afx_scp () {
   fi
 
   echo "afx scp: done. resume on $ssh_target with:"
-  echo "  ssh -t $ssh_target 'CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid'"
+  echo "  ssh -t $ssh_target 'cd $dest_dir && CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid'"
   echo "afx scp: source left untouched at $src_proj_dir"
   echo "afx scp: verify it resumes over there, then delete the source yourself once you're sure:"
   echo "  rm -rf $src_proj_dir"
@@ -2610,28 +2628,46 @@ afx_rsync () {
     *:*) ssh_target="${remote_arg%%:*}"; dest_home="${remote_arg#*:}" ;;
   esac
 
-  local src_proj_dir dest_proj_dir dest_parent
+  local src_proj_dir
   src_proj_dir="$(_afx_proj_dir "$src_home" "$dir")"
   [ -d "$src_proj_dir" ] || { echo "afx rsync: no project directory found: $src_proj_dir" >&2; return 1; }
-  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dir")"
-  dest_parent="$(dirname "$dest_proj_dir")"
 
   echo "afx rsync: checking afx is reachable on $ssh_target..."
-  ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1' \
+  local remote_home
+  remote_home="$(ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1 && printf %s "$HOME"')" \
     || { echo "afx rsync: couldn't confirm afx is installed and on \$PATH on $ssh_target (or the SSH connection itself failed) -- afx rsync requires afx already set up on the destination machine" >&2; return 1; }
 
-  ssh "$ssh_target" "$(printf 'mkdir -p %q' "$dest_parent")" \
-    || { echo "afx rsync: couldn't create $dest_parent on $ssh_target" >&2; return 1; }
+  # dir is the source machine's absolute project path (e.g. /Users/w1b/Projects/x);
+  # registering that same string on a box whose $HOME differs (macOS /Users vs
+  # Linux /home) would point Claude Code at a directory that doesn't exist over
+  # there, so remap dir's home-dir prefix to the destination's $HOME when they differ.
+  local dest_dir="$dir"
+  if [ -n "$remote_home" ] && [ "$remote_home" != "$HOME" ]; then
+    case "$dir" in
+      "$HOME"/*) dest_dir="$remote_home${dir#"$HOME"}" ;;
+    esac
+  fi
+  [ "$dest_dir" = "$dir" ] || echo "afx rsync: remote \$HOME is $remote_home (local is $HOME) -- remapping project dir: $dir -> $dest_dir"
+
+  local dest_proj_dir
+  dest_proj_dir="$(_afx_proj_dir "$dest_home" "$dest_dir")"
+
+  ssh "$ssh_target" "$(printf 'mkdir -p %q' "$dest_proj_dir")" \
+    || { echo "afx rsync: couldn't create $dest_proj_dir on $ssh_target" >&2; return 1; }
 
   local n; n="$(find "$src_proj_dir" -maxdepth 1 -name '*.jsonl' 2>/dev/null | wc -l | tr -d ' ')"
   echo "afx rsync: copying $n session(s) for $dir"
   echo "  $src_proj_dir"
   echo "  -> $ssh_target:$dest_proj_dir"
-  rsync -az "$src_proj_dir" "$ssh_target:$dest_parent/" || { echo "afx rsync: transfer failed" >&2; return 1; }
+  # trailing slashes on both sides: sync src's *contents* into dest_proj_dir
+  # itself (rather than "into" it as a nested subdir) -- works whether or not
+  # dest_dir's remapped basename matches src_proj_dir's, and stays incremental
+  # across re-runs since dest_proj_dir doesn't move between them.
+  rsync -az "$src_proj_dir/" "$ssh_target:$dest_proj_dir/" || { echo "afx rsync: transfer failed" >&2; return 1; }
 
   echo "afx rsync: registering on $ssh_target..."
   local remote_cmd; remote_cmd="$(printf 'afx _register-remote %q %q %q %q %q' \
-    "$dest_home" "$dir" "$sid" "$tool" "rsync_from_$(hostname 2>/dev/null || echo unknown)")"
+    "$dest_home" "$dest_dir" "$sid" "$tool" "rsync_from_$(hostname 2>/dev/null || echo unknown)")"
   if ! ssh "$ssh_target" "$remote_cmd"; then
     echo "afx rsync: transfer succeeded but remote registration failed -- the files are already at $dest_proj_dir on $ssh_target; run this by hand there:" >&2
     echo "  $remote_cmd" >&2
@@ -2639,7 +2675,7 @@ afx_rsync () {
   fi
 
   echo "afx rsync: done. resume on $ssh_target with:"
-  echo "  ssh -t $ssh_target 'CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid'"
+  echo "  ssh -t $ssh_target 'cd $dest_dir && CLAUDE_CONFIG_DIR=$dest_home claude --resume $sid'"
   echo "afx rsync: source left untouched at $src_proj_dir"
   echo "afx rsync: verify it resumes over there, then delete the source yourself once you're sure:"
   echo "  rm -rf $src_proj_dir"

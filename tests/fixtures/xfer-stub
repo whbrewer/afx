@@ -3,10 +3,15 @@
 # file as both names. Real scp/rsync need an actual reachable sshd, which
 # these tests deliberately never spin up (see ssh-stub for why "the remote
 # machine" is just a second sandboxed $HOME on the same filesystem here).
-# afx.sh's own calls always look like `<flags>... <src-dir> <host>:<dest-parent>/`
-# with exactly one src arg and one host:path arg, so parsing out those two
-# and doing the equivalent local `cp -a` reproduces scp/rsync's actual
-# copy-src-dir-into-dest-parent semantics closely enough for these tests.
+#
+# afx.sh's calls come in two shapes and this stub reproduces both with `cp -a`:
+#   - no trailing slash on the source (afx_scp): rename-copy -- if the dest
+#     path doesn't exist yet it becomes a copy of src (possibly under a new
+#     name), otherwise src is nested inside it under its own basename. Same
+#     as real scp/cp -r.
+#   - trailing slash on the source (afx_rsync): sync src's *contents* into
+#     the dest path itself, creating it if needed. Same as real rsync's
+#     trailing-slash convention.
 log="${AFX_TEST_XFER_LOG:-/dev/null}"
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$log"
 
@@ -20,5 +25,18 @@ for a in "$@"; do
   esac
 done
 [ -n "$src" ] && [ -n "$dest_path" ] || { echo "xfer-stub: couldn't parse args: $*" >&2; exit 1; }
-mkdir -p "$dest_path"
-cp -a "$src" "$dest_path/"
+
+case "$src" in
+  */)
+    mkdir -p "$dest_path"
+    cp -a "${src}." "${dest_path%/}/"
+    ;;
+  *)
+    if [ -d "$dest_path" ]; then
+      cp -a "$src" "$dest_path/"
+    else
+      mkdir -p "$(dirname "$dest_path")"
+      cp -a "$src" "$dest_path"
+    fi
+    ;;
+esac
