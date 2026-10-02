@@ -206,6 +206,24 @@ STUB
   [[ "$output" == *"PWD=$dir"* ]]
 }
 
+@test "afx_go: resumes from the starting dir when the session cd'd elsewhere" {
+  local start="$HOME/proj" end="$HOME/proj/sub"; mkdir -p "$end"
+  local home="$HOME/.claude" sid="abc123def456"
+  local projdir; projdir="$(_afx_proj_dir "$home" "$start")"
+  mkdir -p "$projdir"
+  printf '{"cwd":"%s"}\n{"cwd":"%s"}\n' "$start" "$end" > "$projdir/$sid.jsonl"
+  _write_row "$sid" "$end" "$home" claude false "" "did stuff"
+
+  mkdir -p "$HOME/bin"
+  printf '#!/usr/bin/env bash\necho "PWD=$PWD"\n' > "$HOME/bin/claude"
+  chmod +x "$HOME/bin/claude"
+  export PATH="$HOME/bin:$PATH"
+
+  run afx_go abc123
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PWD=$start"* ]]
+}
+
 # ==================== afx_find ====================
 
 @test "afx_find: errors when no transcripts exist at all" {

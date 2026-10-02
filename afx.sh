@@ -728,8 +728,18 @@ afx_go () {
   else
     home="${home:-$HOME/.claude}"
     if [ ! -f "$(_afx_proj_dir "$home" "$dir")/$sid.jsonl" ]; then
-      echo "afx go: session $sid no longer exists in $home — you're in $dir" >&2
-      return 1
+      # The recorded dir is where the session ENDED; claude files the
+      # transcript under the dir it STARTED in, so a session that cd'd
+      # elsewhere mid-run is not under $dir. Find it by id and resume
+      # from its starting cwd (the first cwd in the transcript).
+      local found start
+      found="$(find "$home/projects" -maxdepth 2 -name "$sid.jsonl" -print -quit 2>/dev/null)"
+      if [ -z "$found" ]; then
+        echo "afx go: session $sid no longer exists in $home — you're in $dir" >&2
+        return 1
+      fi
+      start="$(jq -r 'select(.cwd) | .cwd' "$found" 2>/dev/null | head -1)"
+      [ -n "$start" ] && [ -d "$start" ] && cd "$start"
     fi
     CLAUDE_CONFIG_DIR="$home" claude --resume "$sid"
   fi
