@@ -817,7 +817,7 @@ afx_list () {
   filtered="$(
     { if [ "$starred_only" = 1 ]; then jq -c 'select(.starred == true)' "$SESSIONS_FILE"
       else cat "$SESSIONS_FILE"; fi; } \
-    | { [ "$show_all" = 1 ] && cat || jq -c 'select((.dir | split("/") | last) != "tmp")'; } \
+    | { [ "$show_all" = 1 ] && cat || jq -c 'select((.dir | split("/") | last) != "tmp" and .summary != "Session transcript:")'; } \
     | { [ "$dir_only" = 1 ] && jq -c --arg d "$PWD" 'select(.dir == $d)' || cat; } \
     | tac \
     | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; }
