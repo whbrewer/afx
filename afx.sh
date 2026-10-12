@@ -579,7 +579,7 @@ afx_star () {
     hash_arg="$arg1"; shift
   fi
   local note="$*"
-  local sid file home tool markdir="$PWD"
+  local sid file home tool markdir="$(pwd -P)"
   if [ -n "$session_id" ]; then
     # Running inside a Claude Code session (e.g. via `! afx star`): no
     # guessing, no hash needed -- always this exact session.
@@ -587,7 +587,7 @@ afx_star () {
     tool=claude
     sid="$session_id"
     home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    file="$(_afx_proj_dir "$home" "$PWD")/$sid.jsonl"
+    file="$(_afx_proj_dir "$home" "$(pwd -P)")/$sid.jsonl"
     # The shell may have cd'd away from the session's start dir; find the
     # session by id and mark its real cwd, so `afx go` lands in the right
     # place.
@@ -595,7 +595,7 @@ afx_star () {
       || file="$(find "$home/projects" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1)"
     if [ -f "$file" ]; then
       markdir="$(grep -o '"cwd":"[^"]*"' "$file" | head -1 | cut -d'"' -f4)"
-      markdir="${markdir:-$PWD}"
+      markdir="${markdir:-$(pwd -P)}"
     fi
   elif [ -n "$hash_arg" ]; then
     # Target an existing session directly by its `afx list` HASH, wherever
@@ -609,13 +609,13 @@ afx_star () {
     # Newest session for this dir across all claude config dirs + codex homes.
     local d f files=()
     while IFS= read -r d; do
-      files+=( "$(_afx_proj_dir "$d" "$PWD")"/*.jsonl )
+      files+=( "$(_afx_proj_dir "$d" "$(pwd -P)")"/*.jsonl )
     done < <(_afx_claude_dirs)
     while IFS= read -r d; do
-      f="$(_afx_codex_latest "$d" "$PWD")" && files+=( "$f" )
+      f="$(_afx_codex_latest "$d" "$(pwd -P)")" && files+=( "$f" )
     done < <(_afx_codex_homes)
     file="$(ls -t "${files[@]}" 2>/dev/null | head -1)"
-    [ -n "$file" ] || { echo "afx star: no claude/codex sessions found for $PWD" >&2; return 1; }
+    [ -n "$file" ] || { echo "afx star: no claude/codex sessions found for $(pwd -P)" >&2; return 1; }
     if _afx_is_codex "$file"; then
       tool=codex
       home="${file%/sessions/*}"
@@ -818,7 +818,7 @@ afx_list () {
     { if [ "$starred_only" = 1 ]; then jq -c 'select(.starred == true)' "$SESSIONS_FILE"
       else cat "$SESSIONS_FILE"; fi; } \
     | { [ "$show_all" = 1 ] && cat || jq -c 'select((.dir | split("/") | last) != "tmp" and .summary != "Session transcript:")'; } \
-    | { [ "$dir_only" = 1 ] && jq -c --arg d "$PWD" 'select(.dir == $d)' || cat; } \
+    | { [ "$dir_only" = 1 ] && jq -c --arg d "$(pwd -P)" --arg l "$PWD" 'select(.dir == $d or .dir == $l)' || cat; } \
     | tac \
     | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; }
   )"
@@ -1256,13 +1256,13 @@ afx_status () {
       return 1
     fi
   else
-    hits="$(jq -r --arg d "$PWD" --argjson n "$hash_len" \
-      'select(.dir == $d and .starred == true) | "  " + .session_id[0:$n] + "  (" + (.note // .summary // "-") + ")"' \
+    hits="$(jq -r --arg d "$(pwd -P)" --arg l "$PWD" --argjson n "$hash_len" \
+      'select((.dir == $d or .dir == $l) and .starred == true) | "  " + .session_id[0:$n] + "  (" + (.note // .summary // "-") + ")"' \
       "$SESSIONS_FILE" 2>/dev/null)"
     if [ -n "$hits" ]; then
-      echo "starred sessions for $PWD:"; printf '%s\n' "$hits"
+      echo "starred sessions for $(pwd -P):"; printf '%s\n' "$hits"
     else
-      echo "no starred sessions for $PWD"
+      echo "no starred sessions for $(pwd -P)"
       return 1
     fi
   fi
@@ -1659,7 +1659,7 @@ afx_push () {
   local sid file home tool
   if [ -n "$session_id" ] && [ -z "$hash_arg" ]; then
     tool=claude; sid="$session_id"; home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
-    file="$(_afx_proj_dir "$home" "$PWD")/$sid.jsonl"
+    file="$(_afx_proj_dir "$home" "$(pwd -P)")/$sid.jsonl"
     [ -f "$file" ] || file="$(find "$home/projects" -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -1)"
   elif [ -n "$hash_arg" ]; then
     [ -s "$SESSIONS_FILE" ] || { echo "afx push: no sessions recorded yet" >&2; return 1; }
@@ -1674,7 +1674,7 @@ afx_push () {
   [ -f "$file" ] || { echo "afx push: transcript file not found: $file" >&2; return 1; }
 
   local cwd_dir; cwd_dir="$(grep -o '"cwd":"[^"]*"' "$file" | head -1 | cut -d'"' -f4)"
-  [ -n "$cwd_dir" ] || cwd_dir="$PWD"
+  [ -n "$cwd_dir" ] || cwd_dir="$(pwd -P)"
   local project_parent; project_parent="$(dirname "$cwd_dir")"
   local hostname_val; hostname_val="$(hostname 2>/dev/null || echo "")"
   local osuser_val; osuser_val="$(whoami 2>/dev/null || echo "")"
