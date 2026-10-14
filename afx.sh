@@ -24,7 +24,9 @@
 #                          shortcut, starred rows get a * beside it.
 #                          Last 20 by default ($AFX_LIST_LIMIT overrides
 #                          that default); sessions run from a directory
-#                          literally named "tmp" are hidden by default
+#                          literally named "tmp", or under $TMPDIR, /tmp,
+#                          /var/tmp, /dev/shm or $AFX_HIDE_DIRS (colon-
+#                          separated), are hidden by default
 #                          too (one-shot/background runs tend to land
 #                          there); -s limits to starred sessions,
 #                          -d limits to sessions run from $PWD, a
@@ -817,7 +819,11 @@ afx_list () {
   filtered="$(
     { if [ "$starred_only" = 1 ]; then jq -c 'select(.starred == true)' "$SESSIONS_FILE"
       else cat "$SESSIONS_FILE"; fi; } \
-    | { [ "$show_all" = 1 ] && cat || jq -c 'select((.dir | split("/") | last) != "tmp" and .summary != "Session transcript:")'; } \
+    | { [ "$show_all" = 1 ] && cat || jq -c --arg h "${AFX_HIDE_DIRS:-}:${TMPDIR:-}:/tmp:/var/tmp:/private/tmp:/dev/shm" \
+        '($h | split(":") | map(select(length > 0) | rtrimstr("/"))) as $t
+         | select((.dir | split("/") | last) != "tmp"
+                  and .summary != "Session transcript:"
+                  and (.dir as $d | $t | any(. as $p | $d == $p or ($d | startswith($p + "/"))) | not))'; } \
     | { [ "$dir_only" = 1 ] && jq -c --arg d "$(pwd -P)" --arg l "$PWD" 'select(.dir == $d or .dir == $l)' || cat; } \
     | tac \
     | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; }
