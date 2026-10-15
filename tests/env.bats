@@ -192,3 +192,14 @@ _hook () { jq -nc --arg c "$1" --arg d "$2" '{tool_input:{command:$c}, cwd:$d}' 
   run _hook "python x.py" "$HOME/code/proj"
   [ "$status" -eq 0 ]
 }
+
+@test "afx env add: no overwrite prompt when the user aliases mv to mv -i" {
+  run bash -c '
+    shopt -s expand_aliases; alias mv="mv -i" cp="cp -i"
+    export HOME="$1" AFX_ENVS="$1/.afx/envs.jsonl"; source "$2/afx.sh"
+    afx env add a "$1/venvs/alpha/bin/python" && afx env add b "$1/venvs/beta/bin/python" && afx env add a "$1/venvs/alpha/bin/python"
+  ' _ "$HOME" "$BATS_TEST_DIRNAME/.." </dev/null
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"overwrite"* ]]
+  [ "$(wc -l < "$AFX_ENVS")" -eq 2 ]
+}

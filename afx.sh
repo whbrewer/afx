@@ -209,7 +209,7 @@ _afx_migrate () {
   local dir="$HOME/.afx"
   mkdir -p "$dir"
   if [ ! -e "$dir/sessions.jsonl" ] && [ -f "$HOME/.xmarks/sessions.jsonl" ]; then
-    cp "$HOME/.xmarks/sessions.jsonl" "$dir/sessions.jsonl"
+    command cp -f "$HOME/.xmarks/sessions.jsonl" "$dir/sessions.jsonl"
   fi
 }
 
@@ -672,7 +672,7 @@ afx_star () {
         detail: (if $detail == "" then null else $detail end),
         starred: $starred,
         note: (if $note == "" then null else $note end)}'
-  } > "$SESSIONS_FILE.tmp" && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
+  } > "$SESSIONS_FILE.tmp" && command mv -f "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
   if [ "$new_starred" = true ]; then
     echo "starred ${sid:0:$hash_len} → $sid  [$tool/$(_afx_account "$home")]  ($markdir)"
@@ -1344,7 +1344,7 @@ afx_rm () {
   esac
   _afx_lock "$SESSIONS_FILE"
   jq -c --arg s "$sid" 'select(.session_id != $s)' "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" \
-    && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
+    && command mv -f "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
   if [ -n "$transcript_file" ] && [ -f "$transcript_file" ]; then
     rm -f "$transcript_file"
@@ -1494,7 +1494,7 @@ _afx_session_project_map_set () {
   mkdir -p "$HOME/.afx"
   [ -f "$f" ] || echo '{}' > "$f"
   _afx_lock "$f"
-  jq --arg s "$1" --arg p "$2" '.[$s] = $p' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  jq --arg s "$1" --arg p "$2" '.[$s] = $p' "$f" > "$f.tmp" && command mv -f "$f.tmp" "$f"
   _afx_unlock "$f"
 }
 
@@ -1523,7 +1523,7 @@ _afx_dir_project_map_set () {
   mkdir -p "$HOME/.afx"
   [ -f "$f" ] || echo '{}' > "$f"
   _afx_lock "$f"
-  jq --arg d "$1" --arg p "$2" '.[$d] = $p' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  jq --arg d "$1" --arg p "$2" '.[$d] = $p' "$f" > "$f.tmp" && command mv -f "$f.tmp" "$f"
   _afx_unlock "$f"
 }
 
@@ -1862,7 +1862,7 @@ _afx_register_claude_project () {
     hasTrustDialogAccepted: true,
     hasClaudeMdExternalIncludesApproved: false,
     hasClaudeMdExternalIncludesWarningShown: false
-  }' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+  }' "$f" > "$f.tmp" && command mv -f "$f.tmp" "$f"
   _afx_unlock "$f"
 }
 
@@ -1894,7 +1894,7 @@ _afx_sessions_row_upsert () {
         summary:(if $summary=="" then null else $summary end),
         detail:(if $detail=="" then null else $detail end),
         starred:$starred, note:(if $note=="" then null else $note end), prompts:null}'
-  } > "$f.tmp" && mv "$f.tmp" "$f"
+  } > "$f.tmp" && command mv -f "$f.tmp" "$f"
   _afx_unlock "$f"
 }
 
@@ -2019,7 +2019,7 @@ afx_pull () {
   local claude_home="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   local proj_dir; proj_dir="$(_afx_proj_dir "$claude_home" "$into_dir")"
   mkdir -p "$proj_dir"
-  cp "$tmpdir/rewritten.jsonl" "$proj_dir/$external_id.jsonl"
+  command cp -f "$tmpdir/rewritten.jsonl" "$proj_dir/$external_id.jsonl"
 
   _afx_register_claude_project "$claude_home" "$into_dir"
 
@@ -2084,7 +2084,7 @@ afx_cp () {
   echo "  $src_proj_dir"
   echo "  -> $dest_proj_dir"
   mkdir -p "$dest_proj_dir"
-  cp -a "$src_proj_dir/." "$dest_proj_dir/" || { echo "afx cp: copy failed" >&2; return 1; }
+  command cp -a "$src_proj_dir/." "$dest_proj_dir/" || { echo "afx cp: copy failed" >&2; return 1; }
 
   _afx_register_claude_project "$dest_home" "$dir"
 
@@ -2095,7 +2095,7 @@ afx_cp () {
   _afx_lock "$SESSIONS_FILE"
   jq -c --arg d "$dir" --arg sh "$src_home" --arg dh "$dest_home" \
     'if .dir == $d and .home == $sh and (.tool // "claude") == "claude" then .home = $dh else . end' \
-    "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
+    "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" && command mv -f "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
 
   echo "afx cp: done. source left untouched at $src_proj_dir"
@@ -2156,7 +2156,7 @@ afx_mv () {
   echo "  $src_proj_dir"
   echo "  -> $dest_proj_dir"
   mkdir -p "$dest_proj_dir"
-  cp -a "$src_proj_dir/." "$dest_proj_dir/" || { echo "afx mv: copy failed -- source left untouched" >&2; return 1; }
+  command cp -a "$src_proj_dir/." "$dest_proj_dir/" || { echo "afx mv: copy failed -- source left untouched" >&2; return 1; }
 
   echo "afx mv: verifying..."
   if ! diff -rq "$src_proj_dir" "$dest_proj_dir" >/dev/null 2>&1; then
@@ -2170,7 +2170,7 @@ afx_mv () {
   _afx_lock "$SESSIONS_FILE"
   jq -c --arg d "$dir" --arg sh "$src_home" --arg dh "$dest_home" \
     'if .dir == $d and .home == $sh and (.tool // "claude") == "claude" then .home = $dh else . end' \
-    "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" && mv "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
+    "$SESSIONS_FILE" > "$SESSIONS_FILE.tmp" && command mv -f "$SESSIONS_FILE.tmp" "$SESSIONS_FILE"
   _afx_unlock "$SESSIONS_FILE"
 
   rm -rf "$src_proj_dir"
@@ -2482,7 +2482,7 @@ afx_export () {
   [ -f "$sidecar" ] || echo '{}' > "$sidecar"
   jq --arg sid "$sid" --arg title "$title" --arg desc "$desc" --arg tool "$tool" --arg at "$gen_at" --arg path "sessions/$sid.md" \
     '.[$sid] = {title:$title, description:$desc, tool:$tool, generated_at:$at, path:$path}' \
-    "$sidecar" > "$sidecar.tmp" && mv "$sidecar.tmp" "$sidecar"
+    "$sidecar" > "$sidecar.tmp" && command mv -f "$sidecar.tmp" "$sidecar"
 
   {
     echo "---"
@@ -2762,7 +2762,7 @@ _afx_env_upsert () {
   _afx_lock "$f"
   tmp="$f.tmp.$$"
   { [ -s "$f" ] && jq -c --arg n "$name" 'select(.name != $n)' "$f"; printf '%s\n' "$rec"; } > "$tmp" \
-    && mv "$tmp" "$f"
+    && command mv -f "$tmp" "$f"
   _afx_unlock "$f"
 }
 
@@ -2821,7 +2821,7 @@ _afx_env_rm () {
   _afx_env_by_name "$name" >/dev/null || { echo "afx env rm: no such env: $name" >&2; return 1; }
   local tmp="$f.tmp.$$"
   _afx_lock "$f"
-  jq -c --arg n "$name" 'select(.name != $n)' "$f" > "$tmp" && mv "$tmp" "$f"
+  jq -c --arg n "$name" 'select(.name != $n)' "$f" > "$tmp" && command mv -f "$tmp" "$f"
   _afx_unlock "$f"
   echo "afx env: removed $name"
 }
