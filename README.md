@@ -419,6 +419,39 @@ Codex — `afx jobs` doesn't cover it, and there's no per-account home
 override to support multiple Gemini accounts the way `CLAUDE_CONFIG_DIR`/
 `CODEX_HOME` do.
 
+## Python environment map (`afx env`)
+
+The same project lives at different paths, and needs a different venv or
+conda env, on every machine you work from. That does not belong in a repo's
+CLAUDE.md, so afx keeps it per machine in `~/.afx/envs.jsonl` (one JSON
+object per line: `name`, `python`, `activate`, `repos`, `notes`; never synced).
+
+```bash
+afx env discover                 # find venvs (pyvenv.cfg) and conda envs under $HOME
+afx env discover --write         # ...and register them (a project's .venv is named
+                                 # after the project and mapped to its directory)
+afx env add <name> <python> [--repo <dir>]... [--activate <cmd>] [--notes <text>]
+afx env list [--json]
+afx env which [--dir|--activate|--json] [name|path]   # default: $PWD
+afx env rm <name>
+```
+
+`afx env which` picks the env whose `--repo` directory is the longest prefix
+of the path, so a subdirectory of a mapped repo resolves to it. The
+interpreter path is stored as given and never symlink-resolved (a venv's
+`python` points outside the venv).
+
+To make agents actually follow it, `make install-env-hook` (Claude Code
+only, opt-in, not part of `install-hooks`) registers a PreToolUse hook that
+refuses a bare `python`/`pip`/`pytest` in a mapped directory and tells the
+agent which interpreter to use. It stays silent when no env is mapped or the
+command already picks one (the env's bin dir, an `activate` script, or
+`uv`/`conda`/`mamba`/`poetry`/`pixi run`). The same target installs a small
+`afx-env` skill into each `~/.claude*/skills/` so the agent knows to run
+`afx env which`. `make uninstall-env-hook` removes both.
+
+In a repo's CLAUDE.md, nothing machine-specific is needed.
+
 ## Background job tracking
 
 `make install-claude-hook` also registers a `PostToolUse` hook, matched to just

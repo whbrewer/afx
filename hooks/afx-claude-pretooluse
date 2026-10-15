@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# afx PreToolUse hook (registered with a "Bash" matcher) -- when the session's
+# working directory is mapped by `afx env` (~/.afx/envs.jsonl), refuse a bare
+# `python`/`pip`/`pytest` and tell the agent which interpreter to use
+# instead. Exit 2 with a stderr message is how Claude Code feeds a refusal
+# back to the model, which then retries with the right command.
+#
+# Silent (exit 0) whenever it can't be sure it's right: no mapping for this
+# directory, no bare python-ish command, or a command that already picks an
+# environment itself (the mapped env's bin dir, an activate script, or
+# uv/conda/mamba/poetry/pixi run).
+
+[ -n "$AFX_IN_HOOK" ] && exit 0
+
+IN="$(cat)"
+cmd="$(jq -r '.tool_input.command // empty' <<<"$IN" 2>/dev/null)"
+cwd="$(jq -r '.cwd // empty' <<<"$IN" 2>/dev/null)"
+[ -n "$cmd" ] && [ -n "$cwd" ] || exit 0
+
+# Cheap prefilter before sourcing afx.sh: a command position that is
+# python/pythonX.Y/pip/pipX/pytest.
+grep -qE '(^|[;&|(`]|\$\()[[:space:]]*(python[0-9.]*|pip[0-9.]*|pytest)([[:space:]]|$)' <<<"$cmd" || exit 0
+
+# afx.sh sits next to this hook once installed ($BINDIR) and one level up in
+# the source tree (hooks/ vs repo root).
+here="$(dirname "$(readlink -f "$0")")"
+for f in "$here/afx.sh" "$here/../afx.sh"; do
+  [ -r "$f" ] && { source "$f"; break; }
+done
+type _afx_env_find >/dev/null 2>&1 || exit 0
+rec="$(_afx_env_find "$cwd")" || exit 0
+py="$(jq -r '.python' <<<"$rec")"
+act="$(jq -r '.activate // empty' <<<"$rec")"
+name="$(jq -r '.name' <<<"$rec")"
+bindir="${py%/*}"
+
+case "$cmd" in
+  *"$bindir"*|*activate*|*"uv run"*|*"conda run"*|*"mamba run"*|*"poetry run"*|*"pixi run"*) exit 0 ;;
+esac
+
+{
+  echo "afx env: this directory uses the Python environment '$name'. Do not run bare python/pip/pytest; use:"
+  echo "  $py  (and: $py -m pip ..., $py -m pytest ...)"
+  [ -n "$act" ] && echo "or activate it first with: $act"
+  echo "Registry: afx env list (per-machine, ~/.afx/envs.jsonl)."
+} >&2
+exit 2
