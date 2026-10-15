@@ -67,6 +67,35 @@ install-claude-hook:
 	    $$s.bak > $$s.new && mv $$s.new $$s && echo "hooks registered in $$s"; \
 	done
 
+# Opt-in PreToolUse hook (Claude Code only): in a directory mapped by
+# `afx env`, refuse bare python/pip/pytest and point the agent at the mapped
+# interpreter. Separate from install-claude-hook (and not part of
+# install-hooks) because it can block commands, not just log them.
+install-env-hook:
+	install -m 755 hooks/afx-claude-pretooluse $(BINDIR)/afx-claude-pretooluse
+	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
+	  [ -d $$d ] || continue; \
+	  mkdir -p $$d/skills/afx-env && cp skills/afx-env/SKILL.md $$d/skills/afx-env/SKILL.md; \
+	done
+	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
+	  [ -d $$d ] || continue; \
+	  s=$$d/settings.json; [ -f $$s ] || echo '{}' > $$s; \
+	  cp $$s $$s.bak; \
+	  jq --arg cmd "$(BINDIR)/afx-claude-pretooluse" \
+	     '.hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select((.hooks[0].command // "") != $$cmd))) + [{"matcher": "Bash", "hooks": [{"type": "command", "command": $$cmd}]}]' \
+	    $$s.bak > $$s.new && mv $$s.new $$s && echo "env hook registered in $$s"; \
+	done
+
+uninstall-env-hook:
+	@for d in $(HOME)/.claude $(HOME)/.claude-*; do rm -rf $$d/skills/afx-env; done
+	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
+	  s=$$d/settings.json; [ -f $$s ] || continue; \
+	  cp $$s $$s.bak; \
+	  jq --arg cmd "$(BINDIR)/afx-claude-pretooluse" \
+	     '.hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select((.hooks[0].command // "") != $$cmd)))' \
+	    $$s.bak > $$s.new && mv $$s.new $$s && echo "env hook removed from $$s"; \
+	done
+
 uninstall-claude-hook:
 	@for d in $(HOME)/.claude $(HOME)/.claude-*; do \
 	  s=$$d/settings.json; [ -f $$s ] || continue; \
@@ -139,6 +168,6 @@ uninstall-gemini-hook:
 # register (or remove) all three tools' hooks in one shot.
 install-hooks: install-claude-hook install-codex-hook install-gemini-hook
 
-uninstall-hooks: uninstall-claude-hook uninstall-codex-hook uninstall-gemini-hook
+uninstall-hooks: uninstall-env-hook uninstall-claude-hook uninstall-codex-hook uninstall-gemini-hook
 
-.PHONY: install uninstall install-claude-hook uninstall-claude-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook install-hooks uninstall-hooks test
+.PHONY: install uninstall install-env-hook uninstall-env-hook install-claude-hook uninstall-claude-hook install-codex-hook uninstall-codex-hook install-gemini-hook uninstall-gemini-hook install-hooks uninstall-hooks test

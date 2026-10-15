@@ -2691,6 +2691,234 @@ afx_rsync () {
   echo "  rm -rf $src_proj_dir"
 }
 
+# --- afx env: a per-machine map of Python environments ------------------------
+#
+# The same project lives at different paths, and needs a different venv or
+# conda env, on every machine you work from -- facts that don't belong in a
+# repo's CLAUDE.md. This keeps them in ~/.afx/envs.jsonl (never synced, like
+# sessions.jsonl): one JSON object per line,
+#   {name, python, activate, repos: [dir...], notes}
+# `afx env which` resolves $PWD (or a name/path) to an interpreter by the
+# longest matching repo dir; the afx-claude-pretooluse hook uses that to
+# stop an agent from running bare `python`/`pip` in a mapped project.
+
+_afx_env_file () {
+  printf '%s' "${AFX_ENVS:-$HOME/.afx/envs.jsonl}"
+}
+
+# Absolute, physical path of a directory (or of a file's directory). A path
+# that doesn't exist yet is just made tilde-free with no trailing slash.
+_afx_env_abspath () {
+  local p="$1"
+  case "$p" in
+    "~") p="$HOME" ;;
+    "~/"*) p="$HOME/${p#\~/}" ;;
+  esac
+  if [ -d "$p" ]; then (cd "$p" && pwd -P)
+  elif [ -e "$p" ]; then (cd "$(dirname "$p")" && pwd -P)
+  else printf '%s\n' "${p%/}"
+  fi
+}
+
+_afx_env_by_name () {
+  local f; f="$(_afx_env_file)"
+  [ -s "$f" ] || return 1
+  local rec
+  rec="$(jq -sc --arg n "$1" 'map(select(.name == $n)) | last // empty' "$f" 2>/dev/null)"
+  [ -n "$rec" ] || return 1
+  printf '%s\n' "$rec"
+}
+
+# Resolve a name, else a path (default $PWD), to a compact JSON record.
+# Path matching picks the env whose repo dir is the longest prefix of it.
+_afx_env_find () {
+  local arg="${1:-$PWD}" f rec p
+  f="$(_afx_env_file)"
+  [ -s "$f" ] || return 1
+  rec="$(_afx_env_by_name "$arg")" || rec=""
+  if [ -z "$rec" ]; then
+    p="$(_afx_env_abspath "$arg")"
+    rec="$(jq -sc --arg p "$p" '
+      [ .[] | . as $e | (.repos // [])[]
+        | select(. as $r | $p == $r or ($p | startswith($r + "/")))
+        | {len: length, e: $e} ]
+      | sort_by(.len) | last // empty | .e' "$f" 2>/dev/null)"
+  fi
+  [ -n "$rec" ] || return 1
+  printf '%s\n' "$rec"
+}
+
+# Replace (or append) the row for $2's name in the registry; $1 is the file.
+_afx_env_upsert () {
+  local f="$1" rec="$2" name tmp
+  name="$(jq -r '.name' <<<"$rec")"
+  mkdir -p "$(dirname "$f")"
+  _afx_lock "$f"
+  tmp="$f.tmp.$$"
+  { [ -s "$f" ] && jq -c --arg n "$name" 'select(.name != $n)' "$f"; printf '%s\n' "$rec"; } > "$tmp" \
+    && mv "$tmp" "$f"
+  _afx_unlock "$f"
+}
+
+_afx_env_add () {
+  local usage="usage: afx env add <name> [<python>] [--repo <dir>]... [--activate <cmd>] [--notes <text>]"
+  local name="" py="" act="" notes="" repos="" have_act=0 have_notes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --repo) [ $# -ge 2 ] || { echo "afx env: $usage" >&2; return 1; }
+              repos="$repos$(_afx_env_abspath "$2")"$'\n'; shift 2 ;;
+      --activate) [ $# -ge 2 ] || { echo "afx env: $usage" >&2; return 1; }
+                  act="$2"; have_act=1; shift 2 ;;
+      --notes) [ $# -ge 2 ] || { echo "afx env: $usage" >&2; return 1; }
+               notes="$2"; have_notes=1; shift 2 ;;
+      -*) echo "afx env add: unknown option: $1" >&2; return 1 ;;
+      *) if [ -z "$name" ]; then name="$1"
+         elif [ -z "$py" ]; then py="$1"
+         else echo "afx env: $usage" >&2; return 1
+         fi
+         shift ;;
+    esac
+  done
+  [ -n "$name" ] || { echo "afx env: $usage" >&2; return 1; }
+  local old; old="$(_afx_env_by_name "$name")" || old=""
+  if [ -z "$py" ]; then
+    [ -n "$old" ] || { echo "afx env: $usage" >&2; return 1; }
+    py="$(jq -r '.python' <<<"$old")"
+  else
+    # Not resolved with readlink: a venv's python is a symlink to the base
+    # interpreter, and following it would leave the venv.
+    case "$py" in
+      "~/"*) py="$HOME/${py#\~/}" ;;
+      /*) ;;
+      *) py="$PWD/$py" ;;
+    esac
+  fi
+  [ -x "$py" ] || { echo "afx env add: not an executable file: $py" >&2; return 1; }
+  local rec
+  rec="$(jq -nc --arg name "$name" --arg py "$py" --arg act "$act" --arg notes "$notes" \
+    --arg repos "$repos" --argjson old "${old:-null}" \
+    --argjson ha "$have_act" --argjson hn "$have_notes" '
+    ($old // {}) as $o
+    | { name: $name, python: $py,
+        activate: (if $ha == 1 then (if $act == "" then null else $act end) else ($o.activate // null) end),
+        repos: ((($o.repos // []) + ($repos | split("\n") | map(select(length > 0)))) | unique),
+        notes: (if $hn == 1 then (if $notes == "" then null else $notes end) else ($o.notes // null) end) }')" \
+    || return 1
+  _afx_env_upsert "$(_afx_env_file)" "$rec"
+  echo "afx env: $name -> $py"
+}
+
+_afx_env_rm () {
+  local name="${1:-}" f
+  [ -n "$name" ] || { echo "usage: afx env rm <name>" >&2; return 1; }
+  f="$(_afx_env_file)"
+  _afx_env_by_name "$name" >/dev/null || { echo "afx env rm: no such env: $name" >&2; return 1; }
+  local tmp="$f.tmp.$$"
+  _afx_lock "$f"
+  jq -c --arg n "$name" 'select(.name != $n)' "$f" > "$tmp" && mv "$tmp" "$f"
+  _afx_unlock "$f"
+  echo "afx env: removed $name"
+}
+
+_afx_env_list () {
+  local f; f="$(_afx_env_file)"
+  if [ "${1:-}" = "--json" ]; then
+    [ -s "$f" ] && cat "$f"
+    return 0
+  fi
+  [ -s "$f" ] || { echo "afx env: no environments registered (try: afx env discover)" >&2; return 0; }
+  local name py repos
+  while IFS=$'\t' read -r name py repos; do
+    [ -x "$py" ] || py="$py (missing)"
+    printf '%-20s %s%s\n' "$name" "$py" "${repos:+  [$repos]}"
+  done < <(jq -r '[.name, .python, ((.repos // []) | join(", "))] | @tsv' "$f")
+}
+
+_afx_env_which () {
+  local mode=python arg=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --activate) mode=activate; shift ;;
+      --json) mode=json; shift ;;
+      --dir) mode=dir; shift ;;
+      -*) echo "afx env which: unknown option: $1" >&2; return 1 ;;
+      *) arg="$1"; shift ;;
+    esac
+  done
+  local rec; rec="$(_afx_env_find "$arg")" \
+    || { echo "afx env which: no environment mapped for ${arg:-$PWD}" >&2; return 1; }
+  case "$mode" in
+    json) printf '%s\n' "$rec" ;;
+    activate) jq -r '.activate // empty' <<<"$rec" ;;
+    dir) jq -r '.python | sub("/bin/[^/]*$"; "")' <<<"$rec" ;;
+    *) jq -r '.python' <<<"$rec" ;;
+  esac
+}
+
+# Find virtualenvs (pyvenv.cfg) and conda envs (conda-meta) under the given
+# roots (default $HOME) and print them as registrable candidates; --write
+# registers them. A project-local .venv/venv is named after its project and
+# mapped to the project dir; any other env is named after its own dir.
+_afx_env_discover () {
+  local write=0 roots="" hit envdir base parent name repo py seen=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --write) write=1; shift ;;
+      -*) echo "afx env discover: unknown option: $1" >&2; return 1 ;;
+      *) roots="$roots$1"$'\n'; shift ;;
+    esac
+  done
+  [ -n "$roots" ] || roots="$HOME"$'\n'
+  local found
+  found="$(
+    while IFS= read -r r; do
+      [ -n "$r" ] || continue
+      find "$r" -maxdepth 6 \( -name .git -o -name node_modules -o -name .cache -o -name site-packages \
+        -o -name .nvm -o -name .npm -o -name snap -o -name Trash \) -prune \
+        -o \( -name pyvenv.cfg -o -name conda-meta \) -print 2>/dev/null
+    done <<<"$roots" | sort -u
+  )"
+  [ -n "$found" ] || { echo "afx env discover: nothing found" >&2; return 0; }
+  while IFS= read -r hit; do
+    envdir="$(dirname "$hit")"
+    py="$envdir/bin/python"
+    [ -x "$py" ] || continue
+    base="$(basename "$envdir")"
+    repo=""
+    case "$base" in
+      .venv|venv|env|.env) parent="$(dirname "$envdir")"; name="$(basename "$parent")"; repo="$parent" ;;
+      *) name="$base" ;;
+    esac
+    case "$seen" in *$'\n'"$name"$'\n'*) name="$name-2" ;; esac
+    seen="$seen"$'\n'"$name"$'\n'
+    if [ "$write" -eq 1 ]; then
+      if jq -e --arg p "$py" 'select(.python == $p)' "$(_afx_env_file)" >/dev/null 2>&1; then
+        echo "afx env discover: already registered: $py"
+        continue
+      fi
+      if [ -n "$repo" ]; then _afx_env_add "$name" "$py" --repo "$repo"
+      else _afx_env_add "$name" "$py"
+      fi
+    else
+      printf '%-20s %s%s\n' "$name" "$py" "${repo:+  [$repo]}"
+    fi
+  done <<<"$found"
+  [ "$write" -eq 1 ] || echo "(run with --write to register these)" >&2
+}
+
+afx_env () {
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    add) _afx_env_add "$@" ;;
+    rm) _afx_env_rm "$@" ;;
+    list|ls|"") _afx_env_list "$@" ;;
+    which) _afx_env_which "$@" ;;
+    discover) _afx_env_discover "$@" ;;
+    *) echo "afx env: unknown subcommand: $sub (add, rm, list, which, discover)" >&2; return 1 ;;
+  esac
+}
+
 afx_help () {
   cat <<'EOF'
 afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
@@ -2710,6 +2938,7 @@ client for artifax.dev.
   afx port <hash> --to <tool>  hand a session off to the other tool (claude<->codex)
   afx scp <hash> <user@host>[:home]    migrate a project's sessions to another machine over scp
   afx rsync <hash> <user@host>[:home]  same, over rsync (incremental/resumable transfer)
+  afx env <add|rm|list|which|discover>  per-machine map of Python environments (see README)
   afx export <hash> [--format okf] [--out <dir>]  write a session to an Open Knowledge Format bundle (default --out: ~/.afx/okf)
 
 Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port/scp/rsync/export.
@@ -2738,6 +2967,7 @@ afx () {
     scp) afx_scp "$@" ;;
     rsync) afx_rsync "$@" ;;
     export) afx_export "$@" ;;
+    env) afx_env "$@" ;;
     _register-remote) afx_register_remote "$@" ;;
     help|--help|-h|"") afx_help ;;
     *) echo "afx: unknown command: $cmd (see: afx help)" >&2; return 1 ;;
@@ -2749,7 +2979,7 @@ afx () {
 _afx_complete () {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync export help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync export env help" -- "$cur") )
     return 0
   fi
   case "${COMP_WORDS[1]}" in
@@ -2773,7 +3003,7 @@ fi
 if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
   _afx_complete_zsh () {
     if [ "$CURRENT" -eq 2 ]; then
-      compadd star go list status rm find jobs push pull cp mv port scp rsync export help
+      compadd star go list status rm find jobs push pull cp mv port scp rsync export env help
       return
     fi
     case "${words[2]}" in
