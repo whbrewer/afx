@@ -119,6 +119,20 @@ setup() {
   [ "$(jq -r 'select(.name == "proj") | .repos[0]' "$AFX_ENVS")" = "$HOME/code/proj" ]
 }
 
+@test "afx env discover: follows a symlinked root" {
+  ln -s "$HOME/venvs" "$BATS_TEST_TMPDIR/link"
+  run afx env discover "$BATS_TEST_TMPDIR/link"
+  [[ "$output" == *"alpha"* ]]
+}
+
+@test "afx env discover: nothing found names the roots searched and hints at other filesystems" {
+  mkdir -p "$HOME/empty"
+  run afx env discover "$HOME/empty"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing found under: $HOME/empty"* ]]
+  [[ "$output" == *"project or scratch"* ]]
+}
+
 @test "afx env discover --write: skips an interpreter that is already registered" {
   afx env add mine "$HOME/venvs/alpha/bin/python"
   run afx env discover --write "$HOME/venvs"

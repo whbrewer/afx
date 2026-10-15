@@ -2879,12 +2879,16 @@ _afx_env_discover () {
   found="$(
     while IFS= read -r r; do
       [ -n "$r" ] || continue
-      find "$r" -maxdepth 6 \( -name .git -o -name node_modules -o -name .cache -o -name site-packages \
+      find -H "$r" -maxdepth 6 \( -name .git -o -name node_modules -o -name .cache -o -name site-packages \
         -o -name .nvm -o -name .npm -o -name snap -o -name Trash \) -prune \
         -o \( -name pyvenv.cfg -o -name conda-meta \) -print 2>/dev/null
     done <<<"$roots" | sort -u
   )"
-  [ -n "$found" ] || { echo "afx env discover: nothing found" >&2; return 0; }
+  if [ -z "$found" ]; then
+    echo "afx env discover: nothing found under: $(printf '%s' "$roots" | paste -sd' ' -)" >&2
+    echo "  envs may live on a project or scratch filesystem; pass roots, e.g. afx env discover /lustre/orion/<proj>/<user>" >&2
+    return 0
+  fi
   while IFS= read -r hit; do
     envdir="$(dirname "$hit")"
     py="$envdir/bin/python"
