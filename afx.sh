@@ -2863,18 +2863,32 @@ _afx_env_which () {
 
 # Find virtualenvs (pyvenv.cfg) and conda envs (conda-meta) under the given
 # roots (default $HOME) and print them as registrable candidates; --write
-# registers them. A project-local .venv/venv is named after its project and
+# registers them; --prune also drops registered envs whose interpreter is gone
+# (listed only, unless --write). A project-local .venv/venv is named after its project and
 # mapped to the project dir; any other env is named after its own dir.
 _afx_env_discover () {
-  local write=0 roots="" hit envdir base parent name repo py seen=""
+  local write=0 prune=0 roots="" hit envdir base parent name repo py seen=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --write) write=1; shift ;;
+      --prune) prune=1; shift ;;
       -*) echo "afx env discover: unknown option: $1" >&2; return 1 ;;
       *) roots="$roots$1"$'\n'; shift ;;
     esac
   done
   [ -n "$roots" ] || roots="$HOME"$'\n'
+  if [ "$prune" -eq 1 ]; then
+    local f pname ppy
+    f="$(_afx_env_file)"
+    if [ -s "$f" ]; then
+      while IFS=$'\t' read -r pname ppy; do
+        [ -x "$ppy" ] && continue
+        if [ "$write" -eq 1 ]; then _afx_env_rm "$pname" >/dev/null && echo "afx env discover: pruned $pname ($ppy is missing)"
+        else echo "afx env discover: would prune $pname ($ppy is missing)"
+        fi
+      done < <(jq -r '[.name, .python] | @tsv' "$f")
+    fi
+  fi
   local found
   found="$(
     while IFS= read -r r; do

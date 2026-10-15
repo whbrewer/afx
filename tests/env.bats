@@ -203,3 +203,15 @@ _hook () { jq -nc --arg c "$1" --arg d "$2" '{tool_input:{command:$c}, cwd:$d}' 
   [[ "$output" != *"overwrite"* ]]
   [ "$(wc -l < "$AFX_ENVS")" -eq 2 ]
 }
+
+@test "afx env discover --prune: lists missing envs, --write removes them" {
+  afx env add alpha "$HOME/venvs/alpha/bin/python"
+  afx env add beta "$HOME/venvs/beta/bin/python"
+  rm -rf "$HOME/venvs/alpha"
+  run afx env discover --prune "$HOME/empty"
+  [[ "$output" == *"would prune alpha"* ]]
+  [ "$(wc -l < "$AFX_ENVS")" -eq 2 ]
+  run afx env discover --prune --write "$HOME/empty"
+  [[ "$output" == *"pruned alpha"* ]]
+  [ "$(jq -r '.name' "$AFX_ENVS")" = "beta" ]
+}

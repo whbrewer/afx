@@ -430,6 +430,8 @@ object per line: `name`, `python`, `activate`, `repos`, `notes`; never synced).
 afx env discover                 # find venvs (pyvenv.cfg) and conda envs under $HOME
 afx env discover --write         # ...and register them (a project's .venv is named
                                  # after the project and mapped to its directory)
+afx env discover --prune         # list registered envs whose python is gone; with
+                                 # --write, remove them (combine: --prune --write)
 afx env add <name> <python> [--repo <dir>]... [--activate <cmd>] [--notes <text>]
 afx env list [--json]
 afx env which [--dir|--activate|--json] [name|path]   # default: $PWD
