@@ -43,6 +43,13 @@ install:
 	@echo '  make install-codex-hook    # Codex'
 	@echo '  make install-gemini-hook   # Gemini CLI'
 	@echo '  make install-hooks         # all three'
+	@echo ''
+	@echo 'Optional: `afx env` maps repos to Python environments per machine.'
+	@echo 'To make Claude Code use the mapped interpreter instead of bare'
+	@echo 'python/pip/pytest (opt-in; it can block commands):'
+	@echo ''
+	@echo '  make install-env-hook'
+	@echo '  afx env discover --write   # then register this machine'"'"'s envs'
 	@echo '----------------------------------------------------------------'
 
 uninstall:
