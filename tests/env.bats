@@ -215,3 +215,10 @@ _hook () { jq -nc --arg c "$1" --arg d "$2" '{tool_input:{command:$c}, cwd:$d}' 
   [[ "$output" == *"pruned alpha"* ]]
   [ "$(jq -r '.name' "$AFX_ENVS")" = "beta" ]
 }
+
+@test "afx env discover: reports an env skipped for a broken interpreter link" {
+  mkdir -p "$HOME/broken/gone/bin"; : > "$HOME/broken/gone/pyvenv.cfg"
+  ln -s /nonexistent/python "$HOME/broken/gone/bin/python"
+  run afx env discover "$HOME/broken"
+  [[ "$output" == *"skipped $HOME/broken/gone"*"broken link to /nonexistent/python"* ]]
+}

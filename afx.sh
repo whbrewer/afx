@@ -2906,7 +2906,12 @@ _afx_env_discover () {
   while IFS= read -r hit; do
     envdir="$(dirname "$hit")"
     py="$envdir/bin/python"
-    [ -x "$py" ] || continue
+    if [ ! -x "$py" ]; then
+      if [ -L "$py" ]; then echo "afx env discover: skipped $envdir (bin/python is a broken link to $(readlink "$py"); base interpreter not installed or module not loaded)" >&2
+      else echo "afx env discover: skipped $envdir (no executable bin/python)" >&2
+      fi
+      continue
+    fi
     base="$(basename "$envdir")"
     repo=""
     case "$base" in
