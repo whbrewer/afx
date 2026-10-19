@@ -121,13 +121,33 @@ _write_transcript() {
   [ ! -s "$AFX_TEST_XFER_LOG" ]
 }
 
-@test "afx_scp: with no :<dest-home>, the destination home defaults to the source's" {
+@test "afx_scp: with no :<dest-home>, the destination home defaults to the remote's \$HOME/.claude" {
   local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
   _write_transcript "$sid" "$dir" "$home"
   _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
 
   run afx_scp abc123 somehost
-  [[ "$output" == *"-> somehost:$HOME/.claude/projects/"* ]]
+  [[ "$output" == *"-> somehost:$REMOTE_HOME/.claude/projects/"* ]]
+}
+
+@test "afx_rsync: with no :<dest-home>, the destination home defaults to the remote's \$HOME/.claude" {
+  local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
+  _write_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
+
+  run afx_rsync abc123 somehost
+  [[ "$output" == *"-> somehost:$REMOTE_HOME/.claude/projects/"* ]]
+}
+
+@test "afx_scp/afx_rsync: a leading ~ in :<dest-home> expands to the remote \$HOME instead of being used literally" {
+  local dir="$HOME/proj" home="$HOME/.claude" sid="abc123def456"
+  _write_transcript "$sid" "$dir" "$home"
+  _write_row "$sid" "$dir" "$home" claude false "" "did stuff"
+
+  run afx_rsync abc123 "somehost:~/"
+  [[ "$output" == *"-> somehost:$REMOTE_HOME/.claude/projects/"* ]]
+  run afx_scp abc123 "somehost:~/custom"
+  [[ "$output" == *"-> somehost:$REMOTE_HOME/custom/projects/"* ]]
 }
 
 # ==================== afx_scp / afx_rsync: full transfer + remote registration ====================

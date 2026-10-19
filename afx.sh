@@ -2545,7 +2545,7 @@ afx_scp () {
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local hash_arg="${1:-}" remote_arg="${2:-}"
   [ -n "$hash_arg" ] && [ -n "$remote_arg" ] \
-    || { echo "usage: afx scp <hash> <user@host>[:<dest-home>]  (dest-home: an absolute path on the remote machine; default: same as the source's)" >&2; return 1; }
+    || { echo "usage: afx scp <hash> <user@host>[:<dest-home>]  (dest-home: the remote Claude config dir; default: $HOME/.claude on the remote)" >&2; return 1; }
   [ -s "$SESSIONS_FILE" ] || { echo "afx scp: no sessions yet" >&2; return 1; }
   local c; for c in ssh scp jq; do
     command -v "$c" >/dev/null 2>&1 || { echo "afx scp: $c is required" >&2; return 1; }
@@ -2561,7 +2561,7 @@ afx_scp () {
   [ "$tool" = claude ] || { echo "afx scp: only Claude Code sessions are supported right now (this is $tool)" >&2; return 1; }
   src_home="${src_home:-$HOME/.claude}"
 
-  local ssh_target="$remote_arg" dest_home="$src_home"
+  local ssh_target="$remote_arg" dest_home=""
   case "$remote_arg" in
     *:*) ssh_target="${remote_arg%%:*}"; dest_home="${remote_arg#*:}" ;;
   esac
@@ -2574,6 +2574,15 @@ afx_scp () {
   local remote_home
   remote_home="$(ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1 && printf %s "$HOME"')" \
     || { echo "afx scp: couldn't confirm afx is installed and on \$PATH on $ssh_target (or the SSH connection itself failed) -- afx scp requires afx already set up on the destination machine" >&2; return 1; }
+
+  # dest-home is the remote Claude config dir, not the remote $HOME: default to
+  # $HOME/.claude there (the local path rarely exists remotely) and expand a
+  # leading ~, which the remote shell never sees as an unquoted word.
+  case "$dest_home" in
+    "") dest_home="${remote_home:-$HOME}/.claude" ;;
+    "~"|"~/") dest_home="$remote_home/.claude" ;;
+    "~/"*) dest_home="$remote_home/${dest_home#"~/"}" ;;
+  esac
 
   # dir is the source machine's absolute project path (e.g. /Users/w1b/Projects/x);
   # registering that same string on a box whose $HOME differs (macOS /Users vs
@@ -2623,7 +2632,7 @@ afx_rsync () {
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
   local hash_arg="${1:-}" remote_arg="${2:-}"
   [ -n "$hash_arg" ] && [ -n "$remote_arg" ] \
-    || { echo "usage: afx rsync <hash> <user@host>[:<dest-home>]  (dest-home: an absolute path on the remote machine; default: same as the source's)" >&2; return 1; }
+    || { echo "usage: afx rsync <hash> <user@host>[:<dest-home>]  (dest-home: the remote Claude config dir; default: $HOME/.claude on the remote)" >&2; return 1; }
   [ -s "$SESSIONS_FILE" ] || { echo "afx rsync: no sessions yet" >&2; return 1; }
   local c; for c in ssh rsync jq; do
     command -v "$c" >/dev/null 2>&1 || { echo "afx rsync: $c is required" >&2; return 1; }
@@ -2639,7 +2648,7 @@ afx_rsync () {
   [ "$tool" = claude ] || { echo "afx rsync: only Claude Code sessions are supported right now (this is $tool)" >&2; return 1; }
   src_home="${src_home:-$HOME/.claude}"
 
-  local ssh_target="$remote_arg" dest_home="$src_home"
+  local ssh_target="$remote_arg" dest_home=""
   case "$remote_arg" in
     *:*) ssh_target="${remote_arg%%:*}"; dest_home="${remote_arg#*:}" ;;
   esac
@@ -2652,6 +2661,15 @@ afx_rsync () {
   local remote_home
   remote_home="$(ssh -o ConnectTimeout=10 "$ssh_target" 'command -v afx >/dev/null 2>&1 && printf %s "$HOME"')" \
     || { echo "afx rsync: couldn't confirm afx is installed and on \$PATH on $ssh_target (or the SSH connection itself failed) -- afx rsync requires afx already set up on the destination machine" >&2; return 1; }
+
+  # dest-home is the remote Claude config dir, not the remote $HOME: default to
+  # $HOME/.claude there (the local path rarely exists remotely) and expand a
+  # leading ~, which the remote shell never sees as an unquoted word.
+  case "$dest_home" in
+    "") dest_home="${remote_home:-$HOME}/.claude" ;;
+    "~"|"~/") dest_home="$remote_home/.claude" ;;
+    "~/"*) dest_home="$remote_home/${dest_home#"~/"}" ;;
+  esac
 
   # dir is the source machine's absolute project path (e.g. /Users/w1b/Projects/x);
   # registering that same string on a box whose $HOME differs (macOS /Users vs
