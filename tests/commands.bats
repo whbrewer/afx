@@ -97,7 +97,7 @@ _write_row() {
 @test "afx_list: -s shows only starred sessions" {
   _write_row "aaa111" "$HOME/p1" "$HOME/.claude" claude false "" "unstarred one"
   _write_row "bbb222" "$HOME/p2" "$HOME/.claude" claude true "" "starred one"
-  run afx_list -s
+  run afx_list -a -s
   [[ "$output" == *"starred one"* ]]
   [[ "$output" != *"unstarred one"* ]]
 }
@@ -113,7 +113,7 @@ _write_row() {
 @test "afx_list: a pattern filters rows by their summary text" {
   _write_row "aaa111" "$HOME/p1" "$HOME/.claude" claude false "" "fix the parser bug"
   _write_row "bbb222" "$HOME/p2" "$HOME/.claude" claude false "" "add new feature"
-  run afx_list parser
+  run afx_list -a parser
   [[ "$output" == *"fix the parser bug"* ]]
   [[ "$output" != *"add new feature"* ]]
 }
