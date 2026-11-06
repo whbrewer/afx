@@ -747,6 +747,41 @@ afx_go () {
   fi
 }
 
+# Sets the caller's c_hash/c_mark/c_dim/c_warn/c_reset/c_invert (declare
+# them local first; bash and zsh both scope dynamically, so this assigns
+# the caller's copies). Shared by afx_list and afx_brief.
+_afx_colors () {
+  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    # Palette: $AFX_PALETTE / $AFX_HASH_COLOR if already set in the
+    # environment win; otherwise ~/.afx/settings may set them (a small
+    # sourced shell file, e.g. lines reading `AFX_PALETTE=light` or
+    # `AFX_HASH_COLOR=#55BAB4`); otherwise "dark". AFX_HASH_COLOR takes
+    # any "#RRGGBB"/"RRGGBB"/"R,G,B" color and overrides the hash color
+    # regardless of AFX_PALETTE, for picking an exact shade rather than
+    # one of the two built-in palettes. The built-ins are ORNL brand
+    # secondary/accent hues, chosen per palette for contrast against a
+    # dark vs. light terminal background.
+    [ -n "${AFX_PALETTE:-}${AFX_HASH_COLOR:-}" ] || { [ -f "$HOME/.afx/settings" ] && . "$HOME/.afx/settings"; }
+    local hash_rgb
+    if hash_rgb="$(_afx_parse_color "${AFX_HASH_COLOR:-}")"; then
+      c_hash="$(_afx_fg $hash_rgb)"
+    elif [ "${AFX_PALETTE:-dark}" = light ]; then
+      c_hash="$(_afx_fg 45 105 161)"   # Infinity
+    else
+      c_hash="$(_afx_fg 167 251 196)"  # Mist
+    fi
+    if [ "${AFX_PALETTE:-dark}" = light ]; then
+      c_mark="$(_afx_fg 166 33 144)"   # Plasma
+    else
+      c_mark="$(_afx_fg 45 105 161)"   # Infinity
+    fi
+    c_dim=$'\033[2m'
+    c_warn="$(_afx_fg 235 93 42)"      # Spark, same in both palettes
+    c_reset=$'\033[0m'
+    c_invert=$'\033[7m'  # swapped fg/bg, for the table header row
+  fi
+}
+
 afx_list () {
   _afx_migrate
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
@@ -777,35 +812,7 @@ afx_list () {
   # way on every row (even "-"), so the constant escape-code overhead
   # cancels out in column -t's width math instead of skewing it.
   local c_hash="" c_mark="" c_dim="" c_warn="" c_reset="" c_invert=""
-  if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    # Palette: $AFX_PALETTE / $AFX_HASH_COLOR if already set in the
-    # environment win; otherwise ~/.afx/settings may set them (a small
-    # sourced shell file, e.g. lines reading `AFX_PALETTE=light` or
-    # `AFX_HASH_COLOR=#55BAB4`); otherwise "dark". AFX_HASH_COLOR takes
-    # any "#RRGGBB"/"RRGGBB"/"R,G,B" color and overrides the hash color
-    # regardless of AFX_PALETTE, for picking an exact shade rather than
-    # one of the two built-in palettes. The built-ins are ORNL brand
-    # secondary/accent hues, chosen per palette for contrast against a
-    # dark vs. light terminal background.
-    [ -n "${AFX_PALETTE:-}${AFX_HASH_COLOR:-}" ] || { [ -f "$HOME/.afx/settings" ] && . "$HOME/.afx/settings"; }
-    local hash_rgb
-    if hash_rgb="$(_afx_parse_color "${AFX_HASH_COLOR:-}")"; then
-      c_hash="$(_afx_fg $hash_rgb)"
-    elif [ "${AFX_PALETTE:-dark}" = light ]; then
-      c_hash="$(_afx_fg 45 105 161)"   # Infinity
-    else
-      c_hash="$(_afx_fg 167 251 196)"  # Mist
-    fi
-    if [ "${AFX_PALETTE:-dark}" = light ]; then
-      c_mark="$(_afx_fg 166 33 144)"   # Plasma
-    else
-      c_mark="$(_afx_fg 45 105 161)"   # Infinity
-    fi
-    c_dim=$'\033[2m'
-    c_warn="$(_afx_fg 235 93 42)"      # Spark, same in both palettes
-    c_reset=$'\033[0m'
-    c_invert=$'\033[7m'  # swapped fg/bg, for the table header row
-  fi
+  _afx_colors
   # -s (or a pattern) is already a small, deliberate subset -- no cap,
   # unless -n overrides it explicitly. Otherwise last 20 (or -n's count),
   # oldest to newest (latest at the bottom). -a lifts the cap outright.
@@ -2966,6 +2973,417 @@ afx_env () {
   esac
 }
 
+# ==================== campaigns ====================
+#
+# A campaign is a long-running line of work (a science campaign, a paper,
+# a tool) that many sessions, across days and machines, contribute to.
+# Two files, both under ~/.afx:
+#
+#   campaigns.json ($AFX_CAMPAIGNS): the registry, one object keyed by
+#     campaign name: {"<name>": {"title": "...", "dirs": ["~/x", ...]}}.
+#     A session run from one of a campaign's dirs (or anywhere under one)
+#     belongs to it; the longest matching dir wins across campaigns.
+#   meta.jsonl ($AFX_META): one row per session, kept apart from
+#     sessions.jsonl on purpose -- every hook and command that rewrites a
+#     sessions.jsonl row spells out its fields, so a field added there
+#     would be silently dropped by the next rewrite. Fields:
+#       {session_id, host, campaign, campaign_guess, title, state, next,
+#        updated}
+#     campaign is only ever set by `afx tag` ("none" hides the session
+#     from `afx brief`); campaign_guess/title/state/next come from
+#     _afx_classify's LLM pass, run by the Claude SessionEnd hook's async
+#     job and by `afx campaign classify` for older sessions. state is
+#     done | in-progress | waiting | blocked; next is the session's open
+#     to-dos as it left them, each {do, by} where by is "agent" (a coding
+#     agent can finish and check it alone) or "human" (needs a decision,
+#     approval, a person or access); rows from before by existed hold
+#     plain strings, which brief shows untagged. title is a short headline brief shows in
+#     place of the first-prompt summary.
+#
+# A session's campaign is, in order: its `afx tag`, its dir's campaign,
+# the LLM's guess, else "unfiled". Resolved at read time, never stored,
+# so editing the registry regroups every past session at once.
+
+_afx_campaigns_file () { printf '%s' "${AFX_CAMPAIGNS:-$HOME/.afx/campaigns.json}"; }
+_afx_meta_file () { printf '%s' "${AFX_META:-$HOME/.afx/meta.jsonl}"; }
+_afx_host () { printf '%s' "${AFX_HOST:-$(hostname -s 2>/dev/null || hostname)}"; }
+
+_afx_campaigns_json () {
+  local f; f="$(_afx_campaigns_file)"
+  if [ -s "$f" ]; then jq -c '.' "$f"; else echo '{}'; fi
+}
+
+_afx_days_ago () {
+  # $1 days before now, in sessions.jsonl's own "YYYY-MM-DD HH:MM" format
+  # (which sorts as a plain string).
+  date -d "-$1 days" '+%F %H:%M' 2>/dev/null || date -v-"$1"d '+%F %H:%M'
+}
+
+# Resolves a HASH prefix to a full session id (newest matching row);
+# with no hash, falls back to the current session inside one.
+_afx_resolve_sid () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}" sid
+  if [ -z "$1" ]; then
+    [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || return 1
+    printf '%s' "$CLAUDE_CODE_SESSION_ID"
+    return 0
+  fi
+  [ -s "$SESSIONS_FILE" ] || return 1
+  sid="$(jq -r --arg h "$1" 'select(.session_id | startswith($h)) | .session_id' "$SESSIONS_FILE" | tail -1)"
+  [ -n "$sid" ] || return 1
+  printf '%s' "$sid"
+}
+
+# $1 session id, $2 a JSON object merged into that session's meta row
+# (created if missing). Fills in host the first time a row is written.
+_afx_meta_upsert () {
+  local f; f="$(_afx_meta_file)"
+  _afx_lock "$f"
+  {
+    [ -f "$f" ] && jq -c --arg s "$1" 'select(.session_id != $s)' "$f"
+    { [ -f "$f" ] && jq -c --arg s "$1" 'select(.session_id == $s)' "$f" | tail -1; } \
+      | jq -sc --arg s "$1" --argjson p "$2" --arg host "$(_afx_host)" --arg now "$(date '+%F %H:%M')" \
+          '((.[0] // {session_id: $s}) + $p) | .host //= $host | .updated = $now'
+  } > "$f.tmp" && command mv -f "$f.tmp" "$f"
+  _afx_unlock "$f"
+}
+
+# $1 session id, $2 text describing the session (a transcript tail, or a
+# stored summary/detail). Asks an LLM ($AFX_CLASSIFY_CMD, a shell command
+# reading the prompt on stdin; default `claude -p` on $AFX_SUMMARY_MODEL)
+# for its campaign, state and open to-dos, and stores them in meta.jsonl.
+# Prints "<campaign or -> <state>" on success; returns 1, storing
+# nothing, if the call fails or its reply doesn't parse.
+_afx_classify () {
+  local sid="$1" text="$2" camps menu prompt out json
+  camps="$(_afx_campaigns_json)"
+  menu="$(jq -r 'to_entries[] | "- \(.key): \(.value.title // "") (dirs: \((.value.dirs // []) | join(", ")))"' <<<"$camps")"
+  prompt="You are filing one coding-agent work session for a researcher who works on a few long-running campaigns across several machines.
+
+Campaigns (name: title, directories):
+${menu:-(none registered yet)}
+
+Session:
+$text
+
+Reply with only a JSON object, no prose, no code fence:
+{\"title\": \"<what this session worked on, at most 10 words>\", \"campaign\": \"<one campaign name from the list, or null if none clearly fits>\", \"state\": \"done\" or \"in-progress\" or \"waiting\" or \"blocked\", \"next\": [{\"do\": \"...\", \"by\": \"agent\" or \"human\"}]}
+state: \"done\" if the work wrapped up with nothing left to do; \"waiting\" if something long-running (a job, a training run, a build, someone's review) has to finish first; \"blocked\" if it needs something from another person or system before it can continue; otherwise \"in-progress\".
+next: 0 to 3 short, concrete, imperative to-dos still open as the session left things, each under 15 words; [] if done.
+by: \"agent\" only if a coding agent on this machine could finish the step alone (run commands or tests, edit code or config, read files or logs, rebuild) and the result is easy to check (a test passes, a file exists, a number); \"human\" if it needs a decision or judgment call, an approval, contacting someone, credentials or access the agent lacks, physical action, or carefully reading long output. When unsure, \"human\"."
+  local scratch="${TMPDIR:-/tmp}/afx-summary/tmp"
+  mkdir -p "$scratch" 2>/dev/null || scratch="${TMPDIR:-/tmp}"
+  out="$(cd "$scratch" && printf '%s\n' "$prompt" \
+    | AFX_IN_HOOK=1 timeout "${AFX_CLASSIFY_TIMEOUT:-60}" \
+        sh -c "${AFX_CLASSIFY_CMD:-claude -p --model ${AFX_SUMMARY_MODEL:-haiku}}" 2>/dev/null)"
+  # Models wrap JSON in a code fence or a sentence often enough that
+  # parsing has to tolerate both: keep only the outermost {...}.
+  out="$(printf '%s' "$out" | tr '\n' ' ' | sed 's/^[^{]*//; s/[^}]*$//')"
+  json="$(jq -c --argjson c "$camps" '
+    select(type == "object")
+    | {title: (if (.title | type) == "string" then (.title | gsub("\\s+"; " ") | .[0:100]) else null end),
+       state: (if (.state | IN("done", "in-progress", "waiting", "blocked")) then .state else "in-progress" end),
+       next: ([.next[]?
+               | if type == "string" then {do: ., by: null}
+                 elif type == "object" and (.do | type) == "string" then {do, by}
+                 else empty end
+               | .do |= (gsub("\\s+"; " ") | .[0:160])
+               | .by |= (if IN("agent", "human") then . else "human" end)] | .[0:3]),
+       campaign_guess: (.campaign as $k | if ($k | type) == "string" and ($c | has($k)) then $k else null end)}
+  ' <<<"$out" 2>/dev/null)"
+  [ -n "$json" ] || return 1
+  _afx_meta_upsert "$sid" "$json"
+  jq -r '"\(.campaign_guess // "-") \(.state)"' <<<"$json"
+}
+
+afx_campaign () {
+  _afx_migrate
+  local sub="${1:-}"
+  [ $# -gt 0 ] && shift
+  case "$sub" in
+    add) _afx_campaign_add "$@" ;;
+    rm) _afx_campaign_rm "$@" ;;
+    list|ls|"") _afx_campaign_list "$@" ;;
+    edit) _afx_campaign_edit "$@" ;;
+    classify) _afx_campaign_classify "$@" ;;
+    *) echo "afx campaign: unknown subcommand: $sub (add, rm, list, edit, classify)" >&2; return 1 ;;
+  esac
+}
+
+# afx campaign add <name> [title...] [--dir <dir>]...
+# Re-adding an existing name updates its title (when given) and appends
+# any new dirs.
+_afx_campaign_add () {
+  local name="" title="" dirs=() d
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --dir) [ -n "${2:-}" ] || { echo "afx campaign add: --dir needs a directory" >&2; return 1; }
+             d="$2"
+             case "$d" in "~"|"~/"*|/*) ;; *) d="$(cd "$d" 2>/dev/null && pwd -P)" || { echo "afx campaign add: no such directory: $2" >&2; return 1; } ;; esac
+             case "$d" in "$HOME") d="~" ;; "$HOME"/*) d="~${d#"$HOME"}" ;; esac
+             dirs+=("${d%/}"); shift 2 ;;
+      -*) echo "afx campaign add: unknown option $1" >&2; return 1 ;;
+      *) if [ -z "$name" ]; then name="$1"; else title="${title:+$title }$1"; fi; shift ;;
+    esac
+  done
+  case "$name" in
+    ''|none|unfiled|-*|*[!A-Za-z0-9._-]*)
+      echo "usage: afx campaign add <name> [title...] [--dir <dir>]...  (name: letters, digits, . _ -; not none/unfiled)" >&2; return 1 ;;
+  esac
+  local f; f="$(_afx_campaigns_file)"
+  local new
+  new="$(_afx_campaigns_json | jq -c --arg n "$name" --arg t "$title" --args '
+    .[$n] = ((.[$n] // {}) as $o
+             | $o + {title: (if $t == "" then ($o.title // $n) else $t end),
+                     dirs: ((($o.dirs // []) + $ARGS.positional) | unique)})
+  ' "${dirs[@]}")" || return 1
+  printf '%s\n' "$new" | jq '.' > "$f.tmp" && command mv -f "$f.tmp" "$f"
+  jq -r --arg n "$name" '"\($n): \(.[$n].title)  [\(.[$n].dirs | join(", "))]"' <<<"$new"
+}
+
+_afx_campaign_rm () {
+  [ -n "${1:-}" ] || { echo "usage: afx campaign rm <name>" >&2; return 1; }
+  local f; f="$(_afx_campaigns_file)"
+  [ "$(_afx_campaigns_json | jq --arg n "$1" 'has($n)')" = true ] || { echo "afx campaign rm: no such campaign: $1" >&2; return 1; }
+  _afx_campaigns_json | jq --arg n "$1" 'del(.[$n])' > "$f.tmp" && command mv -f "$f.tmp" "$f"
+  echo "removed campaign $1 (sessions tagged to it keep their tag; \`afx tag <hash> -\` clears one)"
+}
+
+_afx_campaign_edit () {
+  local f; f="$(_afx_campaigns_file)"
+  [ -s "$f" ] || echo '{}' > "$f"
+  "${VISUAL:-${EDITOR:-vi}}" "$f" || return 1
+  jq -e 'type == "object"' "$f" >/dev/null 2>&1 || { echo "afx campaign edit: $f is no longer a JSON object -- fix it before the next afx brief" >&2; return 1; }
+}
+
+# The jq definitions afx brief and afx campaign list share for resolving
+# each session's campaign. Expects $home, $hide, $camps and $meta (an
+# array of meta rows) to be bound. Scratch-dir sessions (the same ones
+# afx list hides by default) are dropped unless tagged or inside a
+# registered campaign dir.
+_afx_campaign_jq_defs () {
+  cat <<'JQ'
+def expand: if . == "~" then $home elif startswith("~/") then $home + .[1:] else . end;
+def under($p): . == $p or startswith($p + "/");
+def dircamp: . as $d
+  | [$camps | to_entries[] | .key as $k | (.value.dirs // [])[] | expand | rtrimstr("/")
+     | . as $p | select($d | under($p)) | {k: $k, n: ($p | length)}] | max_by(.n) | .k;
+def hidden: ($hide | split(":") | map(select(length > 0) | rtrimstr("/"))) as $t
+  | (.dir | split("/") | last) == "tmp" or .summary == "Session transcript:"
+    or (.dir as $d | $t | any(. as $p | $d | under($p)));
+def resolved: ($meta | map({key: .session_id, value: .}) | from_entries) as $M
+  | map(($M[.session_id] // {}) as $m | (.dir | dircamp) as $dc
+        | . + {m: $m, dc: $dc, camp: ($m.campaign // $dc // $m.campaign_guess // "unfiled")})
+  | map(select(.camp != "none" and (.m.campaign != null or .dc != null or (hidden | not))));
+JQ
+}
+
+_afx_campaign_list () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}" meta
+  meta="$(_afx_meta_file)"
+  local camps; camps="$(_afx_campaigns_json)"
+  [ "$camps" != '{}' ] || { echo "no campaigns yet: afx campaign add <name> [title...] --dir <dir>" >&2; return 1; }
+  jq -rn --argjson camps "$camps" --arg home "$HOME" \
+     --arg hide "${AFX_HIDE_DIRS:-}:${TMPDIR:-}:/tmp:/var/tmp:/private/tmp:/dev/shm" \
+     --slurpfile s <([ -f "$SESSIONS_FILE" ] && cat "$SESSIONS_FILE") \
+     --slurpfile meta <([ -f "$meta" ] && cat "$meta") \
+     "$(_afx_campaign_jq_defs)"'
+    ($s | resolved | group_by(.camp) | map({key: .[0].camp, value: .}) | from_entries) as $g
+    | $camps | to_entries[]
+    | ($g[.key] // []) as $rows
+    | "\(.key)\t\(.value.title // "")\t\($rows | length) sessions\t\(if ($rows | length) > 0 then "last " + ($rows | map(.date) | max) else "-" end)\t\((.value.dirs // []) | join(", "))"
+  ' | column -t -s $'\t'
+}
+
+# afx campaign classify [-n N] [--days D] [--redo] [--dry-run]
+# Backfills meta.jsonl for sessions that ended before the SessionEnd hook
+# classified anything (or with --redo, every session in range), from each
+# row's stored summary/detail -- the transcript itself isn't re-read.
+_afx_campaign_classify () {
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}" meta
+  meta="$(_afx_meta_file)"
+  local days=60 limit=500 redo=0 dry=0 jobs="${AFX_CLASSIFY_JOBS:-4}"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n) limit="${2:-}"; shift 2 ;;
+      --days) days="${2:-}"; shift 2 ;;
+      --redo) redo=1; shift ;;
+      --dry-run) dry=1; shift ;;
+      *) echo "usage: afx campaign classify [-n N] [--days D] [--redo] [--dry-run]" >&2; return 1 ;;
+    esac
+  done
+  case "$limit$days" in *[!0-9]*|'') echo "afx campaign classify: -n and --days take numbers" >&2; return 1 ;; esac
+  [ -s "$SESSIONS_FILE" ] || { echo "afx campaign classify: no sessions yet" >&2; return 1; }
+  local hash_len; hash_len="$(jq -r '.session_id' "$SESSIONS_FILE" | _afx_hash_len)"
+  local todo
+  todo="$(jq -c -n --argjson camps "$(_afx_campaigns_json)" --arg home "$HOME" --arg since "$(_afx_days_ago "$days")" \
+     --arg hide "${AFX_HIDE_DIRS:-}:${TMPDIR:-}:/tmp:/var/tmp:/private/tmp:/dev/shm" \
+     --argjson redo "$redo" --argjson limit "$limit" \
+     --slurpfile s "$SESSIONS_FILE" --slurpfile meta <([ -f "$meta" ] && cat "$meta") \
+     "$(_afx_campaign_jq_defs)"'
+    $s | resolved
+    | map(select(.date >= $since and ($redo == 1 or .m.state == null)))
+    | sort_by(.date) | reverse | .[0:$limit][]
+    | {session_id, text: "directory: \(.dir)\ndate: \(.date)\nsummary: \(.note // .summary // "")\nrecap: \(.detail // "(none)")"}')"
+  local count=0
+  [ -n "$todo" ] && count="$(printf '%s\n' "$todo" | wc -l | tr -d ' ')"
+  if [ "$dry" = 1 ] || [ "$count" = 0 ]; then
+    echo "$count session(s) to classify (last $days days$([ "$redo" = 1 ] && echo ', including already-classified'))"
+    return 0
+  fi
+  echo "classifying $count session(s), $jobs at a time..." >&2
+  # A subshell, so the background jobs below don't print job-control
+  # notices in an interactive shell.
+  (
+    local i=0 line sid text res
+    while IFS= read -r line; do
+      sid="$(jq -r '.session_id' <<<"$line")"
+      text="$(jq -r '.text' <<<"$line")"
+      {
+        if res="$(_afx_classify "$sid" "$text")"; then
+          printf '%s  %s\n' "${sid:0:$hash_len}" "$res"
+        else
+          printf '%s  (failed)\n' "${sid:0:$hash_len}" >&2
+        fi
+      } &
+      i=$((i + 1))
+      [ $((i % jobs)) -eq 0 ] && wait
+    done <<<"$todo"
+    wait
+  )
+}
+
+# afx tag [hash] <campaign|none|->
+# Files a session under a campaign, overriding both its dir and the LLM's
+# guess. "none" keeps it out of afx brief altogether; "-" clears the tag.
+# Inside a session, a bare `afx tag <campaign>` tags that session.
+afx_tag () {
+  _afx_migrate
+  local hash="" camp sid
+  case $# in
+    1) camp="$1" ;;
+    2) hash="$1"; camp="$2" ;;
+    *) echo "usage: afx tag [hash] <campaign|none|->" >&2; return 1 ;;
+  esac
+  sid="$(_afx_resolve_sid "$hash")" || { echo "afx tag: no such session: ${hash:-(not inside a session; pass a hash)}" >&2; return 1; }
+  case "$camp" in
+    -) _afx_meta_upsert "$sid" '{"campaign": null}'; echo "untagged ${sid:0:8}" ;;
+    none) _afx_meta_upsert "$sid" '{"campaign": "none"}'; echo "${sid:0:8} hidden from afx brief" ;;
+    *) [ "$(_afx_campaigns_json | jq --arg n "$camp" 'has($n)')" = true ] \
+         || { echo "afx tag: no such campaign: $camp (afx campaign list; afx campaign add $camp ...)" >&2; return 1; }
+       _afx_meta_upsert "$sid" "$(jq -nc --arg c "$camp" '{campaign: $c}')"
+       echo "tagged ${sid:0:8} → $camp" ;;
+  esac
+}
+
+# afx close [hash...]
+# Marks sessions done and drops their open to-dos, so afx brief stops
+# listing them. Resuming one and ending it again re-classifies it.
+afx_close () {
+  _afx_migrate
+  local h sid rc=0
+  [ $# -gt 0 ] || set -- ""
+  for h in "$@"; do
+    if sid="$(_afx_resolve_sid "$h")"; then
+      _afx_meta_upsert "$sid" '{"state": "done", "next": []}'
+      echo "closed ${sid:0:8}"
+    else
+      echo "afx close: no such session: ${h:-(not inside a session; pass a hash)}" >&2; rc=1
+    fi
+  done
+  return "$rc"
+}
+
+# afx brief [-d DAYS] [-n N] [-c CAMPAIGN] [-a] [--for agent|human]
+# Where every campaign stands: the sessions touched in the last DAYS days
+# (default 14) that are still open, newest first, with each one's open
+# to-dos and the HASH `afx go` resumes; campaigns with nothing in that
+# window are listed as quiet. -n caps sessions per campaign (default 4),
+# -c shows one campaign only, -a includes sessions marked done. --for
+# keeps only to-dos tagged for an agent or for you (and the sessions that
+# have one); untagged to-dos from older rows are left out of both until
+# `afx campaign classify --redo` tags them.
+afx_brief () {
+  _afx_migrate
+  local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}" meta
+  meta="$(_afx_meta_file)"
+  local days=14 per=4 only="" show_done=0 for=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -d|--days) days="${2:-}"; shift 2 ;;
+      -n) per="${2:-}"; shift 2 ;;
+      -c|--campaign) only="${2:-}"; shift 2 ;;
+      -a|--all) show_done=1; shift ;;
+      --for) for="${2:-}"; shift 2 ;;
+      --for=*) for="${1#--for=}"; shift ;;
+      --agent) for=agent; shift ;;
+      --human) for=human; shift ;;
+      *) echo "usage: afx brief [-d DAYS] [-n N] [-c CAMPAIGN] [-a] [--for agent|human]" >&2; return 1 ;;
+    esac
+  done
+  case "$for" in ''|agent|human) ;; *) echo "afx brief: --for takes agent or human" >&2; return 1 ;; esac
+  case "$days$per" in *[!0-9]*|'') echo "afx brief: -d and -n take numbers" >&2; return 1 ;; esac
+  [ -s "$SESSIONS_FILE" ] || { echo "afx brief: no sessions yet; install the SessionEnd hook: make install-claude-hook" >&2; return 1; }
+  local c_hash="" c_mark="" c_dim="" c_warn="" c_reset="" c_invert=""
+  _afx_colors
+  local hash_len; hash_len="$(jq -r '.session_id' "$SESSIONS_FILE" | _afx_hash_len)"
+  jq -rn --argjson camps "$(_afx_campaigns_json)" --arg home "$HOME" \
+     --arg hide "${AFX_HIDE_DIRS:-}:${TMPDIR:-}:/tmp:/var/tmp:/private/tmp:/dev/shm" \
+     --arg since "$(_afx_days_ago "$days")" --arg now "$(date '+%F %H:%M')" --argjson days "$days" \
+     --argjson per "$per" --arg only "$only" --argjson show_done "$show_done" --arg for "$for" \
+     --argjson n "$hash_len" --arg host "$(_afx_host)" \
+     --arg ch "$c_hash" --arg cm "$c_mark" --arg cd "$c_dim" --arg cw "$c_warn" --arg cr "$c_reset" \
+     --slurpfile s "$SESSIONS_FILE" --slurpfile meta <([ -f "$meta" ] && cat "$meta") \
+     "$(_afx_campaign_jq_defs)"'
+    def epoch: try (strptime("%Y-%m-%d %H:%M") | mktime) catch null;
+    def rel: epoch as $e | ($now | epoch) as $now_e | if $e == null then "?" else (($now_e - $e) / 60 | floor) as $m
+      | if $m < 60 then "\($m)m" elif $m < 1440 then "\($m / 60 | floor)h" else "\($m / 1440 | floor)d" end end;
+    def pad($w): tostring | . + ([range(0; $w - length)] | map(" ") | join(""));
+    def trunc($w): gsub("\\s+"; " ") | if length > $w then .[0:$w - 3] + "..." else . end;
+    def steps: (.m.next // []) | map(if type == "string" then {do: ., by: null} else . end)
+      | if $for == "" then . else map(select(.by == $for)) end;
+    def isopen: (.m.state // "") != "done";
+    def keep: $for == "" or (steps | length) > 0;
+    def state: (.m.state // "?") | if . == "in-progress" then "active" else . end;
+    def scolor: if . == "blocked" then $cw elif . == "waiting" then $cm elif . == "done" or . == "?" then $cd else "" end;
+    def dirname: .dir | if . == $home then "~" else split("/") | last end;
+    def row: state as $st
+      | "  \($st | scolor)\($st | pad(7))\($cr)  \($ch)\(.session_id[0:$n])\($cr)  \(.date | rel | pad(4))  \(dirname | trunc(22) | pad(22))  \(.note // .m.title // .summary // "-" | trunc(56))"
+        + (if (.m.host // $host) != $host then "  \($cd)@\(.m.host)\($cr)" else "" end),
+        (steps[] | "      → \(if .by == null then "" else "\($cd)\(if .by == "human" then "you" else "agent" end):\($cr) " end)\(.do)");
+    ($s | resolved) as $all
+    | ($all | group_by(.camp) | map({camp: .[0].camp, rows: (sort_by(.date) | reverse)})
+       | map(. + {last: .rows[0].date, win: [.rows[] | select(.date >= $since)]})
+       | map(select($only == "" or .camp == $only))) as $groups
+    | ($groups | map(select(.camp != "unfiled" and (.win | length) > 0)) | sort_by(.last) | reverse) as $active
+    | ([$groups[] | select(.camp == "unfiled") | .win[]]) as $unfiled
+    | "\($cd)afx brief: last \($days) days on \($host) (\($all | map(select(.date >= $since)) | length) sessions)\($cr)",
+      ( $active[]
+        | (.win | map(select(isopen))) as $open
+        | (.win | map(select(isopen | not))) as $closed
+        | (if $show_done == 1 then .win else $open end | map(select(keep))) as $shown
+        | "",
+          "\($cm)\(.camp)\($cr)  \($camps[.camp].title // "")  \($cd)last \(.last | rel) · \($open | length) open, \($closed | length) done\($cr)",
+          ($shown[0:$per][] | row),
+          (if ($shown | length) > $per then "  \($cd)+\(($shown | length) - $per) more (afx brief -c \(.camp) -n 99)\($cr)" else empty end) ),
+      ( [$groups[] | select(.camp != "unfiled" and (.win | length) == 0)] as $q
+        | ($camps | keys | map(select(. as $k | ($only == "" or $k == $only) and ($groups | map(.camp) | index($k) | not)))) as $never
+        | if ($q | length) + ($never | length) > 0 then
+            "", "\($cd)quiet: \(([$q[] | "\(.camp) (\(.last | rel))"] + [$never[] | "\(.) (no sessions)"]) | join(", "))\($cr)"
+          else empty end ),
+      ( if ($unfiled | length) > 0 then
+          "",
+          "\($cm)unfiled\($cr)  \($cd)\($unfiled | length) sessions; afx tag <hash> <campaign>, or afx campaign add <name> --dir <dir>\($cr)",
+          ($unfiled | map(.dir | if startswith($home) then "~" + .[($home | length):] else . end)
+           | group_by(.) | map({d: .[0], c: length}) | sort_by(-.c) | .[0:5]
+           | "  \($cd)top dirs: \(map("\(.d) (\(.c))") | join(", "))\($cr)"),
+          ($unfiled | map(select(isopen and keep))[0:$per][] | row)
+        else empty end ),
+      ( ($all | map(select(.date >= $since and .m.state == null)) | length) as $u
+        | if $u > 0 then "", "\($cd)\($u) session(s) in range not classified yet (no state/next): afx campaign classify\($cr)" else empty end )
+  ' | _afx_page
+}
+
 afx_help () {
   cat <<'EOF'
 afx — a CLI for coding-agent sessions (Claude Code, Codex, and Gemini CLI), and the
@@ -2986,6 +3404,11 @@ client for artifax.dev.
   afx scp <hash> <user@host>[:home]    migrate a project's sessions to another machine over scp
   afx rsync <hash> <user@host>[:home]  same, over rsync (incremental/resumable transfer)
   afx env <add|rm|list|which|discover>  per-machine map of Python environments (see README)
+  afx brief [-d DAYS] [-c NAME] [-a]   where each campaign stands: open sessions, to-dos, hashes
+            [--for agent|human]          only to-dos an agent can finish alone, or ones that need you
+  afx campaign <add|rm|list|edit|classify>  register campaigns (name, title, dirs); backfill state
+  afx tag [hash] <campaign|none|->      file a session under a campaign (none hides it, - clears)
+  afx close [hash...]                   mark sessions done so afx brief stops listing them
   afx export <hash> [--format okf] [--out <dir>]  write a session to an Open Knowledge Format bundle (default --out: ~/.afx/okf)
 
 Every session's HASH (from `afx list`) is a shortcut for star/go/rm/push/cp/mv/port/scp/rsync/export.
@@ -3015,6 +3438,10 @@ afx () {
     rsync) afx_rsync "$@" ;;
     export) afx_export "$@" ;;
     env) afx_env "$@" ;;
+    brief) afx_brief "$@" ;;
+    campaign) afx_campaign "$@" ;;
+    tag) afx_tag "$@" ;;
+    close) afx_close "$@" ;;
     _register-remote) afx_register_remote "$@" ;;
     help|--help|-h|"") afx_help ;;
     *) echo "afx: unknown command: $cmd (see: afx help)" >&2; return 1 ;;
@@ -3026,11 +3453,11 @@ afx () {
 _afx_complete () {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync export env help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "star go list status rm find jobs push pull cp mv port scp rsync export env brief campaign tag close help" -- "$cur") )
     return 0
   fi
   case "${COMP_WORDS[1]}" in
-    star|go|rm|push|cp|mv|port|scp|rsync|export)
+    star|go|rm|push|cp|mv|port|scp|rsync|export|tag|close)
       local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
       [ -r "$f" ] || return 0
       local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"
@@ -3050,11 +3477,11 @@ fi
 if [ -n "$ZSH_VERSION" ] && typeset -f compdef >/dev/null 2>&1; then
   _afx_complete_zsh () {
     if [ "$CURRENT" -eq 2 ]; then
-      compadd star go list status rm find jobs push pull cp mv port scp rsync export env help
+      compadd star go list status rm find jobs push pull cp mv port scp rsync export env brief campaign tag close help
       return
     fi
     case "${words[2]}" in
-      star|go|rm|push|cp|mv|port|scp|rsync|export)
+      star|go|rm|push|cp|mv|port|scp|rsync|export|tag|close)
         local f="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
         [ -r "$f" ] || return 0
         local n; n="$(jq -r '.session_id' "$f" 2>/dev/null | _afx_hash_len)"

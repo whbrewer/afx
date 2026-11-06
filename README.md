@@ -419,6 +419,68 @@ Codex — `afx jobs` doesn't cover it, and there's no per-account home
 override to support multiple Gemini accounts the way `CLAUDE_CONFIG_DIR`/
 `CODEX_HOME` do.
 
+## Campaigns: where everything stands (`afx brief`)
+
+Sessions pile up fast, but the work behind them usually falls into a few
+long-running campaigns. `afx brief` is the morning view: for each campaign,
+the sessions touched recently that are still open, newest first, with each
+one's open to-dos and the HASH that `afx go` resumes.
+
+```bash
+afx campaign add turbulence MaxEnt sampling and SICKLE --dir ~/turbulence
+afx campaign add exadigit ExaDigiT and RAPS --dir ~/exa --dir ~/latex/hpc-oda-26
+afx campaign classify          # one-time backfill of older sessions (LLM, ~4 at a time)
+afx brief                      # last 14 days; -d DAYS, -c NAME, -n N per campaign, -a with done
+afx brief --for agent          # only to-dos an agent can finish and check alone (--agent)
+afx brief --for human          # only to-dos that need you: decisions, approvals, people (--human)
+```
+
+```
+exadigit  ExaDigiT and RAPS  last 1h · 2 open, 0 done
+  active   90cbeed  1h    hpc-cooling-surrogate   Audited Frontier HPC telemetry; identified...
+      → agent: Verify Sun et al. 2024 DOI and Figshare cooling records directly
+      → you: Decide whether to re-download the missing Frontier telemetry
+  waiting  9726979  18h   raps                    Integrating the live shell into RAPS
+```
+
+A session's campaign is, in order: its `afx tag`, the campaign whose
+`--dir` it ran under (longest match wins), the LLM's guess, otherwise
+`unfiled`. Campaigns are resolved when `afx brief` runs, never stored, so
+adding a campaign or a dir regroups every past session at once. The
+unfiled section lists its most common directories, which tells you which
+campaign or `--dir` to add next.
+
+- `afx tag [hash] <campaign>` files a session by hand, for when the
+  directory gets it wrong (afx work done from inside a science repo, say).
+  Use `afx tag <hash> none` to hide a session from `afx brief` and
+  `afx tag <hash> -` to clear a tag. Inside a session, `! afx tag <campaign>`
+  tags that session.
+- `afx close [hash...]` marks sessions done so they stop showing as open.
+  If you resume a closed session and end it again, it gets re-classified.
+- `afx campaign list | rm <name> | edit` manage the registry,
+  `~/.afx/campaigns.json` (`$AFX_CAMPAIGNS`).
+
+State and to-dos come from the Claude SessionEnd hook's async job, which
+also makes a second LLM call ($AFX_SUMMARY_MODEL, haiku by default; or
+any command in `$AFX_CLASSIFY_CMD` that reads a prompt on stdin). That
+call returns a headline, a campaign guess, a state (`active`, `waiting`,
+`blocked` or `done`) and up to three open to-dos, each tagged `agent`
+(a coding agent can finish it alone and the result is easy to check) or
+`human` (a decision, approval, email, access, or long output to read;
+also the default when the model is unsure). Sessions classified before
+tagging existed show untagged to-dos, which `--for` leaves out until
+`afx campaign classify --redo` tags them. They go into
+`~/.afx/meta.jsonl` (`$AFX_META`), keyed by session id, together with
+the machine's hostname. `sessions.jsonl` is left alone on purpose,
+because every hook that rewrites a row there spells out its fields.
+`AFX_AUTOCLASSIFY=0` turns this off. Codex and Gemini sessions aren't
+classified at exit yet; they still group by directory, and
+`afx campaign classify` picks them up.
+
+The hostname is recorded for cross-machine use: a session from another
+machine shows `@host` after its summary. Syncing journals between
+machines is the next step and isn't built yet.
+
 ## Python environment map (`afx env`)
 
 The same project lives at different paths, and needs a different venv or

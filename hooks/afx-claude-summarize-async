@@ -65,3 +65,16 @@ if [ -n "$lock_cmd" ]; then
 else
   update_detail
 fi
+
+# Then file the session for `afx brief`: campaign guess, state, open
+# to-dos (see afx.sh's campaigns section). Separate LLM call, written to
+# ~/.afx/meta.jsonl rather than this row, so a failure here can't touch
+# the detail just written. AFX_AUTOCLASSIFY=0 skips it.
+if [ "${AFX_AUTOCLASSIFY:-1}" != 0 ]; then
+  . "$(dirname "$(readlink -f "$0")")/afx.sh" 2>/dev/null
+  if command -v _afx_classify >/dev/null 2>&1; then
+    _afx_classify "$sid" "directory: $cwd
+recap: $detail
+end of transcript: $(printf '%s' "$excerpt" | tail -c 12000)" >/dev/null 2>&1
+  fi
+fi
