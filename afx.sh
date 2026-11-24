@@ -1055,7 +1055,7 @@ afx_find () {
         sid="$(head -1 "$f" | jq -r '.payload.session_id // empty' 2>/dev/null)"
         cwd="$(head -1 "$f" | jq -r '.payload.cwd // empty' 2>/dev/null)"
         # Same item_completed/UserMessage schema _afx_first_msg uses --
-        # there's no top-level payload.type == "user_message" in current
+        # there is no top-level payload.type == "user_message" in current
         # Codex rollouts.
         jq -r --arg sid "$sid" --arg cwd "$cwd" --arg home "$home" --arg tool "$tool" '
           select(.type == "event_msg" and .payload.type == "item_completed"
