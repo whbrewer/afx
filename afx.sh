@@ -198,6 +198,13 @@
 # snapshots restore functions but not unexported variables, so a top-level
 # assignment would be lost in `!` shells inside sessions.
 
+# Portable `tac` (reverse lines): macOS/BSD has no tac, but has `tail -r`.
+if command -v tac >/dev/null 2>&1; then
+  _afx_tac () { tac; }
+else
+  _afx_tac () { tail -r; }
+fi
+
 # One-time setup: creates ~/.afx if it doesn't exist, and -- the first
 # time afx ever runs on a machine that already has xmarks state -- imports
 # ~/.xmarks/sessions.jsonl into ~/.afx/sessions.jsonl so switching from
@@ -832,7 +839,7 @@ afx_list () {
                   and .summary != "Session transcript:"
                   and (.dir as $d | $t | any(. as $p | $d == $p or ($d | startswith($p + "/"))) | not))'; } \
     | { [ "$dir_only" = 1 ] && jq -c --arg d "$(pwd -P)" --arg l "$PWD" 'select(.dir == $d or .dir == $l)' || cat; } \
-    | tac \
+    | _afx_tac \
     | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; }
   )"
   # Total (pre-cap) count, so the compact view can tell the user how much
@@ -840,7 +847,7 @@ afx_list () {
   local total=0
   [ -n "$filtered" ] && total="$(printf '%s\n' "$filtered" | wc -l | tr -d ' ')"
   local rows
-  rows="$(printf '%s\n' "$filtered" | { [ "$use_cap" = 1 ] && head -n "$limit" || cat; } | tac)"
+  rows="$(printf '%s\n' "$filtered" | { [ "$use_cap" = 1 ] && head -n "$limit" || cat; } | _afx_tac)"
   # AGENT is only worth a column/line when the listed sessions actually mix
   # tools; with everything on claude (the common case) it's a no-op value.
   local show_tool=0
@@ -872,7 +879,7 @@ afx_list () {
   [ "$long" != "$reverse" ] && flip=1
   if [ "$long" = 1 ]; then
     local first=1
-    { printf '%s\n' "$rows" | { [ "$flip" = 1 ] && tac || cat; } \
+    { printf '%s\n' "$rows" | { [ "$flip" = 1 ] && _afx_tac || cat; } \
     | jq -r '[.date, .session_id, .dir, .home, (.reason // ""), (.summary // ""), (.detail // ""),
               (.note // ""), (.starred // false), (.tool // "")] | join("")' \
     | while read -r date sid dir home reason summary detail note starred tool; do
@@ -917,7 +924,7 @@ afx_list () {
           printf '%s\tDIR\tSUMMARY\tPROMPTS\t%*s\n' "$hash_header" "$agewidth" AGE
         fi
         local maxlen="${AFX_NOTE_MAXLEN:-52}"
-        printf '%s\n' "$rows" | { [ "$flip" = 1 ] && tac || cat; } \
+        printf '%s\n' "$rows" | { [ "$flip" = 1 ] && _afx_tac || cat; } \
         | jq -r '[.date, .session_id, .dir, .home, (.reason // ""), (.summary // ""), (.note // ""),
                   (.starred // false), (.tool // ""), (.prompts // "")] | join("")' \
         | while read -r date sid dir home reason summary note starred tool prompts; do
@@ -1108,7 +1115,7 @@ afx_find () {
   local total; total="$(printf '%s\n' "$grouped" | wc -l | tr -d ' ')"
   local rows="$grouped"
   [ "$limit_set" = 1 ] && rows="$(printf '%s\n' "$grouped" | tail -n "$limit")"
-  [ "$reverse" = 1 ] && rows="$(printf '%s\n' "$rows" | tac)"
+  [ "$reverse" = 1 ] && rows="$(printf '%s\n' "$rows" | _afx_tac)"
 
   local agewidth=3 w
   while IFS= read -r w; do
@@ -1198,13 +1205,13 @@ afx_jobs () {
   local use_cap=1
   [ "$limit_set" = 0 ] && [ -n "$pattern" ] && use_cap=0
   local filtered
-  filtered="$(cat "$jobs" | tac | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; })"
+  filtered="$(cat "$jobs" | _afx_tac | { [ -n "$pattern" ] && grep -i -- "$pattern" || cat; })"
   local total=0
   [ -n "$filtered" ] && total="$(printf '%s\n' "$filtered" | wc -l | tr -d ' ')"
   local rows
-  rows="$(printf '%s\n' "$filtered" | { [ "$use_cap" = 1 ] && head -n "$limit" || cat; } | tac)"
+  rows="$(printf '%s\n' "$filtered" | { [ "$use_cap" = 1 ] && head -n "$limit" || cat; } | _afx_tac)"
   [ -n "$rows" ] || { echo "afx jobs: no match for '$pattern'" >&2; return 1; }
-  [ "$reverse" = 1 ] && rows="$(printf '%s\n' "$rows" | tac)"
+  [ "$reverse" = 1 ] && rows="$(printf '%s\n' "$rows" | _afx_tac)"
 
   # Starred sessions get the same * marker `afx list` gives them.
   local SESSIONS_FILE="${AFX_SESSIONS:-$HOME/.afx/sessions.jsonl}"
